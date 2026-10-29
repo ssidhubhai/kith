@@ -5,6 +5,9 @@
 export interface Member {
   id: string;
   display_name: string;
+  username?: string;
+  email?: string;
+  auth_provider?: string;
   nickname?: string;
   avatar_url?: string;
   avatar_color: string;
@@ -15,7 +18,36 @@ export interface Member {
   is_online?: boolean;
 }
 
-export type ConnectionState = 'connected' | 'reconnecting' | 'offline';
+export interface ConnectedAccount {
+  provider: 'google' | 'email' | string;
+  id: string;
+  email?: string;
+  created_at?: string;
+}
+
+export type AuthView = 'signin' | 'signup' | 'forgot_password' | 'set_username';
+
+
+export type BackendStatus =
+  | 'not_configured'
+  | 'connecting'
+  | 'connected'
+  | 'missing_schema_or_permissions'
+  | 'connection_failed'
+  | 'reconnecting'
+  | 'local_only';
+
+export interface BackendInfo {
+  status: BackendStatus;
+  message?: string;
+  source: 'env' | 'storage' | 'none';
+  url?: string;
+  missingTables?: string[];
+  realtimeActive?: boolean;
+  lastChecked?: string;
+}
+
+export type ConnectionState = BackendStatus;
 
 export type ConversationType = 'group' | 'direct';
 

@@ -9,9 +9,10 @@ import {
   RefreshCw,
   WifiOff,
   User,
-  Users
+  Users,
+  AlertCircle
 } from 'lucide-react';
-import { Conversation, Message, Member, Attachment, TypingIndicator } from '../types';
+import { Conversation, Message, Member, Attachment, TypingIndicator, ConnectionState } from '../types';
 import { MessageItem } from './MessageItem';
 import { MessageComposer } from './MessageComposer';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
@@ -38,10 +39,11 @@ interface ChatAreaProps {
   onTyping: () => void;
   draft?: string;
   onDraftChange?: (draft: string) => void;
-  connectionState?: 'connected' | 'reconnecting' | 'offline';
+  connectionState?: ConnectionState;
   lastReadTime?: number;
   onForwardMessage?: (message: Message) => void;
   onOpenFriendProfile?: (member: Member) => void;
+  onRetryMessage?: (message: Message) => void;
 }
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
@@ -65,7 +67,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   connectionState = 'connected',
   lastReadTime = 0,
   onForwardMessage,
-  onOpenFriendProfile
+  onOpenFriendProfile,
+  onRetryMessage
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -193,10 +196,40 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           <span>Reconnecting to circle...</span>
         </div>
       )}
-      {connectionState === 'offline' && (
+      {connectionState === 'connection_failed' && (
         <div className="bg-rose-50 border-b border-rose-200 text-rose-700 px-4 py-1.5 text-xs font-medium flex items-center justify-center gap-2 z-30 shrink-0 animate-in slide-in-from-top duration-150">
           <WifiOff className="w-3.5 h-3.5 text-rose-600" />
-          <span>You are currently offline. Messages will send when connection returns.</span>
+          <span>Connection disrupted. Messages will retry when connection returns.</span>
+        </div>
+      )}
+      {connectionState === 'missing_schema_or_permissions' && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-800 px-4 py-1.5 text-xs font-medium flex items-center justify-between gap-2 z-30 shrink-0">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+            <span>Connected to Supabase, but database tables or permissions need setup.</span>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenSupabaseModal}
+            className="underline font-semibold hover:text-amber-950 cursor-pointer text-[11px] shrink-0"
+          >
+            Run Migration
+          </button>
+        </div>
+      )}
+      {connectionState === 'local_only' && (
+        <div className="bg-neutral-100 border-b border-neutral-200 text-neutral-700 px-4 py-1.5 text-xs font-medium flex items-center justify-between gap-2 z-30 shrink-0">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+            <span>Local Demo Mode: Messages only sync across tabs on this device.</span>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenSupabaseModal}
+            className="text-[#8B7CF6] font-semibold underline hover:text-[#7868E8] cursor-pointer text-[11px] shrink-0"
+          >
+            Connect Cloud
+          </button>
         </div>
       )}
 
@@ -399,6 +432,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                               const found = members.find((m) => m.id === mId);
                               if (found) onOpenFriendProfile?.(found);
                             }}
+                            onRetry={onRetryMessage}
                           />
                         </React.Fragment>
                       );

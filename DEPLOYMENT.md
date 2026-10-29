@@ -81,7 +81,7 @@ VITE_GIPHY_API_KEY=""
 3. Click **Add New** -> **Project**.
 4. Import your GitHub repository.
 5. In the **Environment Variables** section, add:
-   - `VITE_SUPABASE_URL`: Your Supabase URL
+   - `VITE_SUPABASE_URL`: Your Supabase URL (e.g. `https://xyzproject.supabase.co`)
    - `VITE_SUPABASE_ANON_KEY`: Your Supabase anon public key
    - `VITE_GIPHY_API_KEY`: (Optional)
 6. Framework Preset: **Vite**.
@@ -89,7 +89,10 @@ VITE_GIPHY_API_KEY=""
 8. Output Directory: `dist`
 9. Click **Deploy**.
 
-Your app is live with SSL, global CDN, and automatic Git-based deploys.
+> ⚠️ **CRITICAL NOTE ON VERCEL ENVIRONMENT VARIABLES & REDEPLOYMENT**:
+> Vite inlines all `VITE_*` environment variables directly into the compiled JavaScript bundle at build time (`npm run build`).
+> If you add or modify `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Vercel Settings *after* the initial deployment, you **MUST trigger a fresh Redeployment** (go to Deployments → three dots on latest deployment → Redeploy → ensure "Use existing Build Cache" is unchecked).
+> Otherwise, the deployed site will continue serving old bundles with empty environment variables, leaving sessions disconnected from your cloud database.
 
 ---
 

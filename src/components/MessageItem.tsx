@@ -33,6 +33,7 @@ interface MessageItemProps {
   onScrollToMessage?: (messageId: string) => void;
   onForward?: (message: Message) => void;
   onOpenFriendProfile?: (memberId: string) => void;
+  onRetry?: (message: Message) => void;
 }
 
 export const MessageItem: React.FC<MessageItemProps> = ({
@@ -46,7 +47,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   onOpenAttachment,
   onScrollToMessage,
   onForward,
-  onOpenFriendProfile
+  onOpenFriendProfile,
+  onRetry
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
@@ -202,6 +204,19 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                 <span className="text-[10px] tabular-nums text-[#827D8B] shrink-0">
                   {formatMessageTime(message.created_at)}
                 </span>
+                {message.status === 'pending' && (
+                  <span className="text-[10px] text-amber-600 italic shrink-0">· sending...</span>
+                )}
+                {message.status === 'failed' && (
+                  <button
+                    type="button"
+                    onClick={() => onRetry?.(message)}
+                    title={message.error || 'Failed to deliver to Supabase. Click to retry.'}
+                    className="text-[10px] text-rose-600 font-semibold underline shrink-0 cursor-pointer hover:text-rose-700"
+                  >
+                    · Not delivered (Retry)
+                  </button>
+                )}
                 {message.updated_at && !isDeleted && (
                   <span className="text-[10px] text-[#827D8B] italic shrink-0">(edited)</span>
                 )}

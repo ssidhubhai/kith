@@ -4,9 +4,10 @@ import {
   Message,
   Attachment,
   Reaction,
-  TypingIndicator
+  TypingIndicator,
+  ConnectionState
 } from '../types';
-import { getSupabase } from './supabaseClient';
+import { getSupabase, isSupabaseConfigured, isLocalModeExplicitlyEnabled } from './supabaseClient';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { sanitizeFilename, validateFileSize } from '../utils/fileValidation';
 import { getDirectConversationKey } from '../utils/conversationUtils';
@@ -16,44 +17,19 @@ const CURRENT_MEMBER_STORAGE_KEY = 'kith_current_member';
 const LOCAL_MESSAGES_KEY = 'kith_local_messages';
 const LOCAL_MEMBERS_KEY = 'kith_local_members';
 const LOCAL_CONVERSATIONS_KEY = 'kith_local_conversations';
-const LOCAL_REACTIONS_KEY = 'kith_local_reactions';
 const LOCAL_READ_STATES_KEY = 'kith_local_read_states';
 
-// Self-clean any legacy dummy seeds from browser storage
-if (typeof window !== 'undefined') {
-  try {
-    const rawMsgs = localStorage.getItem(LOCAL_MESSAGES_KEY);
-    if (rawMsgs && (rawMsgs.includes('seed-msg-') || rawMsgs.includes('The Collective'))) {
-      const parsed = JSON.parse(rawMsgs);
-      if (Array.isArray(parsed)) {
-        const cleaned = parsed.filter(m => !m.id?.startsWith('seed-'));
-        localStorage.setItem(LOCAL_MESSAGES_KEY, JSON.stringify(cleaned));
-      }
-    }
-    const rawMembers = localStorage.getItem(LOCAL_MEMBERS_KEY);
-    if (rawMembers && rawMembers.includes('11111111-1111-1111-1111-111111111111')) {
-      const parsed = JSON.parse(rawMembers);
-      if (Array.isArray(parsed)) {
-        const cleaned = parsed.filter(m => !m.id?.startsWith('11111111-') && !m.id?.startsWith('22222222-') && !m.id?.startsWith('33333333-') && !m.id?.startsWith('44444444-'));
-        localStorage.setItem(LOCAL_MEMBERS_KEY, JSON.stringify(cleaned));
-      }
-    }
-  } catch {
-    // ignore
-  }
-}
-
-// Multi-tab broadcast channel
+// Multi-tab broadcast channel for local multi-tab synchronization
 const broadcastChannel = typeof window !== 'undefined' && 'BroadcastChannel' in window
   ? new BroadcastChannel('kith_realtime_mesh')
   : null;
 
-// Realtime listeners map: conversationId -> Set of callbacks
 type MessageCallback = (message: Message, action: 'insert' | 'update' | 'delete') => void;
 type ReactionCallback = (reaction: Reaction, action: 'insert' | 'delete') => void;
 type TypingCallback = (typing: TypingIndicator) => void;
 type PresenceCallback = (memberId: string, isOnline: boolean) => void;
-type ConnectionCallback = (state: 'connected' | 'reconnecting' | 'offline') => void;
+type ConnectionCallback = (state: ConnectionState) => void;
+type MemberUpdateCallback = (members: Member[]) => void;
 
 interface ConversationListeners {
   messageCallbacks: Set<MessageCallback>;
@@ -64,18 +40,22 @@ interface ConversationListeners {
 const listeners = new Map<string, ConversationListeners>();
 const presenceListeners = new Set<PresenceCallback>();
 const connectionListeners = new Set<ConnectionCallback>();
+const memberUpdateListeners = new Set<MemberUpdateCallback>();
 const onlineMemberSet = new Set<string>();
-let currentConnectionState: 'connected' | 'reconnecting' | 'offline' = 'connected';
 
-function notifyConnectionState(state: 'connected' | 'reconnecting' | 'offline') {
+let currentConnectionState: ConnectionState = 'connected';
+let globalPresenceChannel: RealtimeChannel | null = null;
+let membersSubscriptionChannel: RealtimeChannel | null = null;
+
+function notifyConnectionState(state: ConnectionState) {
   currentConnectionState = state;
-  connectionListeners.forEach(cb => cb(state));
-}
-
-// Window network listeners
-if (typeof window !== 'undefined') {
-  window.addEventListener('online', () => notifyConnectionState('connected'));
-  window.addEventListener('offline', () => notifyConnectionState('offline'));
+  connectionListeners.forEach(cb => {
+    try {
+      cb(state);
+    } catch (e) {
+      console.error(e);
+    }
+  });
 }
 
 function broadcast(type: string, payload: unknown) {
@@ -88,7 +68,7 @@ function broadcast(type: string, payload: unknown) {
   }
 }
 
-// Setup incoming broadcast listener for multi-tab sync
+// Multi-tab local message listener
 if (broadcastChannel) {
   broadcastChannel.onmessage = (event) => {
     const { type, payload } = event.data || {};
@@ -126,26 +106,135 @@ if (broadcastChannel) {
   };
 }
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    if (isSupabaseConfigured() && !isLocalModeExplicitlyEnabled()) {
+      notifyConnectionState('connecting');
+      ChatEngine.reconcileState();
+    } else {
+      notifyConnectionState('connected');
+    }
+  });
+  window.addEventListener('offline', () => notifyConnectionState('connection_failed'));
+}
+
 export class ChatEngine {
   /**
-   * Clears all local application and chat data to start 100% fresh
+   * Initializes global Realtime subscriptions for Presence and Member directory updates.
    */
+  static initGlobalRealtime(): void {
+    const supabase = getSupabase();
+    const currentMember = this.getCurrentMember();
+
+    if (!supabase || isLocalModeExplicitlyEnabled()) {
+      notifyConnectionState(isSupabaseConfigured() ? 'connected' : 'local_only');
+      return;
+    }
+
+    // Initialize cross-session presence tracking
+    try {
+      if (globalPresenceChannel) {
+        supabase.removeChannel(globalPresenceChannel);
+        globalPresenceChannel = null;
+      }
+
+      globalPresenceChannel = supabase.channel('kith_global_presence', {
+        config: { presence: { key: currentMember?.id || 'anon' } }
+      });
+
+      globalPresenceChannel
+        .on('presence', { event: 'sync' }, () => {
+          const state = globalPresenceChannel?.presenceState() || {};
+          onlineMemberSet.clear();
+          Object.keys(state).forEach((key) => {
+            if (key !== 'anon') {
+              onlineMemberSet.add(key);
+            }
+          });
+          if (currentMember?.id) {
+            onlineMemberSet.add(currentMember.id);
+          }
+          // Notify listeners
+          presenceListeners.forEach(cb => {
+            onlineMemberSet.forEach(id => cb(id, true));
+          });
+        })
+        .on('presence', { event: 'join' }, ({ key }) => {
+          if (key && key !== 'anon') {
+            onlineMemberSet.add(key);
+            presenceListeners.forEach(cb => cb(key, true));
+          }
+        })
+        .on('presence', { event: 'leave' }, ({ key }) => {
+          if (key && key !== 'anon') {
+            onlineMemberSet.delete(key);
+            presenceListeners.forEach(cb => cb(key, false));
+          }
+        })
+        .subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            notifyConnectionState('connected');
+            if (currentMember) {
+              await globalPresenceChannel?.track({
+                member_id: currentMember.id,
+                display_name: currentMember.display_name,
+                online_at: new Date().toISOString()
+              });
+            }
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            notifyConnectionState('reconnecting');
+          }
+        });
+    } catch (err) {
+      console.warn('[Kith] Presence channel setup exception:', err);
+    }
+
+    // Subscribe to members table changes so new members appear live across all sessions
+    try {
+      if (membersSubscriptionChannel) {
+        supabase.removeChannel(membersSubscriptionChannel);
+        membersSubscriptionChannel = null;
+      }
+
+      membersSubscriptionChannel = supabase
+        .channel('kith_members_directory')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'members' },
+          async () => {
+            const updated = await this.getMembers();
+            memberUpdateListeners.forEach(cb => cb(updated));
+          }
+        )
+        .subscribe();
+    } catch (err) {
+      console.warn('[Kith] Members subscription exception:', err);
+    }
+  }
+
+  /**
+   * Reconnects and reconciles data after network interruption.
+   */
+  static async reconcileState(): Promise<void> {
+    this.initGlobalRealtime();
+    const current = this.getCurrentMember();
+    if (current) {
+      await this.upsertMemberRecord(current);
+    }
+  }
+
   static clearAllData(): void {
     try {
       localStorage.removeItem(CURRENT_MEMBER_STORAGE_KEY);
       localStorage.removeItem(LOCAL_MESSAGES_KEY);
       localStorage.removeItem(LOCAL_MEMBERS_KEY);
       localStorage.removeItem(LOCAL_CONVERSATIONS_KEY);
-      localStorage.removeItem(LOCAL_REACTIONS_KEY);
       localStorage.removeItem(LOCAL_READ_STATES_KEY);
     } catch {
       // ignore
     }
   }
 
-  /**
-   * Loads current user identity from localStorage
-   */
   static getCurrentMember(): Member | null {
     try {
       const data = localStorage.getItem(CURRENT_MEMBER_STORAGE_KEY);
@@ -159,8 +248,102 @@ export class ChatEngine {
   }
 
   /**
-   * Sets or updates current user identity
+   * Resolves the canonical authenticated member profile from Supabase Auth & public.members.
    */
+  static async fetchAuthenticatedMember(): Promise<Member | null> {
+    const supabase = getSupabase();
+    if (!supabase || isLocalModeExplicitlyEnabled()) {
+      return this.getCurrentMember();
+    }
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        return null;
+      }
+
+      const user = session.user;
+      const { data } = await supabase
+        .from('members')
+        .select('*')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (data) {
+        const member: Member = {
+          ...data,
+          email: user.email,
+          auth_provider: user.app_metadata?.provider || 'email',
+          is_online: true
+        };
+        localStorage.setItem(CURRENT_MEMBER_STORAGE_KEY, JSON.stringify(member));
+        return member;
+      }
+
+      // If user exists in Auth but public.members record is pending sync
+      const meta = user.user_metadata || {};
+      const fallbackUsername = meta.username || user.email?.split('@')[0]?.toLowerCase().replace(/[^a-z0-9_]/g, '_') || `user_${user.id.slice(0, 5)}`;
+      const newMember: Member = {
+        id: user.id,
+        display_name: meta.display_name || meta.full_name || fallbackUsername,
+        username: fallbackUsername,
+        email: user.email,
+        auth_provider: user.app_metadata?.provider || 'email',
+        avatar_color: '#8B7CF6',
+        avatar_url: meta.avatar_url || meta.picture,
+        last_seen_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        is_online: true
+      };
+
+      await this.upsertMemberRecord(newMember);
+      localStorage.setItem(CURRENT_MEMBER_STORAGE_KEY, JSON.stringify(newMember));
+      return newMember;
+    } catch (err) {
+      console.warn('[Kith] Error fetching authenticated member:', err);
+      return this.getCurrentMember();
+    }
+  }
+
+  /**
+   * Completely signs out of Supabase Auth, cleans up presence, and removes cached state.
+   */
+  static async signOut(): Promise<void> {
+    const supabase = getSupabase();
+    if (globalPresenceChannel && supabase) {
+      try {
+        await globalPresenceChannel.untrack();
+        supabase.removeChannel(globalPresenceChannel);
+        globalPresenceChannel = null;
+      } catch {}
+    }
+
+    if (membersSubscriptionChannel && supabase) {
+      try {
+        supabase.removeChannel(membersSubscriptionChannel);
+        membersSubscriptionChannel = null;
+      } catch {}
+    }
+
+    listeners.forEach((conv) => {
+      conv.messageCallbacks.clear();
+      conv.reactionCallbacks.clear();
+      conv.typingCallbacks.clear();
+    });
+    listeners.clear();
+    onlineMemberSet.clear();
+
+    if (supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch {}
+    }
+
+    try {
+      localStorage.removeItem(CURRENT_MEMBER_STORAGE_KEY);
+    } catch {}
+  }
+
   static async setCurrentMember(displayName: string, existingId?: string): Promise<Member> {
     const trimmed = displayName.trim();
     if (!trimmed) {
@@ -169,12 +352,15 @@ export class ChatEngine {
 
     const current = this.getCurrentMember();
     const memberId = existingId || current?.id || crypto.randomUUID();
-    const avatarColors = ['#171717', '#262626', '#404040', '#525252', '#0A0A0A'];
+    const avatarColors = ['#8B7CF6', '#10B981', '#F59E0B', '#EC4899', '#3B82F6', '#6366F1'];
     const avatarColor = current?.avatar_color || avatarColors[Math.floor(Math.random() * avatarColors.length)];
 
     const member: Member = {
       id: memberId,
       display_name: trimmed,
+      username: current?.username,
+      email: current?.email,
+      auth_provider: current?.auth_provider || 'email',
       avatar_color: avatarColor,
       last_seen_at: new Date().toISOString(),
       created_at: current?.created_at || new Date().toISOString(),
@@ -183,19 +369,16 @@ export class ChatEngine {
 
     localStorage.setItem(CURRENT_MEMBER_STORAGE_KEY, JSON.stringify(member));
 
-    // Persist into members list & Supabase
     await this.upsertMemberRecord(member);
 
-    // Broadcast presence
     broadcast('presence', { member_id: member.id, is_online: true });
     onlineMemberSet.add(member.id);
+
+    this.initGlobalRealtime();
 
     return member;
   }
 
-  /**
-   * Updates current user's profile and broadcasts to peers
-   */
   static async updateCurrentMemberProfile(updates: Partial<Member>): Promise<Member> {
     const current = this.getCurrentMember();
     if (!current) throw new Error('Not logged in');
@@ -215,41 +398,50 @@ export class ChatEngine {
   }
 
   /**
-   * Upserts member into Supabase or local store
+   * Upserts member into Supabase (if configured) or local store.
+   * Handles PostgREST errors explicitly.
    */
   private static async upsertMemberRecord(member: Member): Promise<void> {
     const supabase = getSupabase();
-    if (supabase) {
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
-        await supabase.from('members').upsert({
+        const { error: memberErr } = await supabase.from('members').upsert({
           id: member.id,
           display_name: member.display_name,
+          username: member.username || null,
+          email: member.email || null,
+          auth_provider: member.auth_provider || 'email',
           nickname: member.nickname || null,
           avatar_url: member.avatar_url || null,
           avatar_color: member.avatar_color,
           status_text: member.status_text || null,
           hide_last_seen: Boolean(member.hide_last_seen),
           last_seen_at: new Date().toISOString()
-        });
+        }, { onConflict: 'id' });
 
-        // Ensure default group conversation exists in Supabase
+        if (memberErr) {
+          console.error('[Kith] Error upserting member to Supabase:', memberErr);
+        }
+
+
+        // Ensure default shared group conversation exists
         await supabase.from('conversations').upsert({
           id: DEFAULT_GROUP_ID,
           type: 'group',
           title: 'The Collective'
         }, { onConflict: 'id' });
 
-        // Join default conversation
+        // Join conversation membership
         await supabase.from('conversation_members').upsert({
           conversation_id: DEFAULT_GROUP_ID,
           member_id: member.id
         }, { onConflict: 'conversation_id,member_id' });
       } catch (err) {
-        console.warn('Supabase member upsert error, falling back to local:', err);
+        console.error('[Kith] Supabase member upsert exception:', err);
       }
     }
 
-    // Always update local cache
+    // Keep local cache up to date
     const members = this.getLocalMembers();
     const idx = members.findIndex(m => m.id === member.id);
     if (idx >= 0) {
@@ -260,14 +452,11 @@ export class ChatEngine {
     localStorage.setItem(LOCAL_MEMBERS_KEY, JSON.stringify(members));
   }
 
-  /**
-   * Returns list of discoverable members
-   */
   static async getMembers(): Promise<Member[]> {
     const current = this.getCurrentMember();
     const supabase = getSupabase();
 
-    if (supabase) {
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
         const { data, error } = await supabase
           .from('members')
@@ -279,9 +468,11 @@ export class ChatEngine {
             ...m,
             is_online: m.id === current?.id || onlineMemberSet.has(m.id)
           }));
+        } else if (error) {
+          console.error('[Kith] Supabase getMembers error:', error);
         }
       } catch (err) {
-        console.warn('Error fetching members from Supabase, using local:', err);
+        console.error('[Kith] Supabase getMembers exception:', err);
       }
     }
 
@@ -293,9 +484,6 @@ export class ChatEngine {
     }));
   }
 
-  /**
-   * Internal helper for local members store
-   */
   private static getLocalMembers(): Member[] {
     try {
       const raw = localStorage.getItem(LOCAL_MEMBERS_KEY);
@@ -311,14 +499,11 @@ export class ChatEngine {
     return [];
   }
 
-  /**
-   * Returns list of conversations for current member (Group chat + Direct chats)
-   */
   static async getConversations(memberId: string): Promise<Conversation[]> {
     const supabase = getSupabase();
-    if (supabase) {
+
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
-        // Query group and direct conversations
         const { data: convs, error } = await supabase
           .from('conversations')
           .select(`
@@ -332,7 +517,7 @@ export class ChatEngine {
           for (const c of convs) {
             const memberIds = (c.conversation_members || []).map((cm: { member_id: string }) => cm.member_id);
             if (c.type === 'group' || memberIds.includes(memberId)) {
-              // Fetch last message
+              // Fetch latest message
               const { data: lastMsg } = await supabase
                 .from('messages')
                 .select('*')
@@ -357,12 +542,13 @@ export class ChatEngine {
             return list;
           }
 
-          // If no conversations exist in Supabase yet, create default group
-          await supabase.from('conversations').insert({
+          // Ensure default group if table was empty
+          await supabase.from('conversations').upsert({
             id: DEFAULT_GROUP_ID,
             type: 'group',
             title: 'The Collective'
-          });
+          }, { onConflict: 'id' });
+
           return [{
             id: DEFAULT_GROUP_ID,
             type: 'group',
@@ -372,19 +558,17 @@ export class ChatEngine {
             participant_ids: [memberId],
             unread_count: 0
           }];
+        } else if (error) {
+          console.error('[Kith] Supabase getConversations error:', error);
         }
       } catch (err) {
-        console.warn('Supabase getConversations error:', err);
+        console.error('[Kith] Supabase getConversations exception:', err);
       }
     }
 
-    // Local fallback
     return this.getLocalConversations(memberId);
   }
 
-  /**
-   * Local conversations store
-   */
   private static getLocalConversations(memberId: string): Conversation[] {
     try {
       const raw = localStorage.getItem(LOCAL_CONVERSATIONS_KEY);
@@ -414,7 +598,6 @@ export class ChatEngine {
       // ignore
     }
 
-    // Default Group conversation without any dummy messages
     const defaultGroup: Conversation = {
       id: DEFAULT_GROUP_ID,
       type: 'group',
@@ -429,9 +612,6 @@ export class ChatEngine {
     return [defaultGroup];
   }
 
-  /**
-   * Retrieves or creates a 1-on-1 direct conversation with another member
-   */
   static async getOrCreateDirectConversation(targetMember: Member): Promise<Conversation> {
     const current = this.getCurrentMember();
     if (!current) throw new Error('Not logged in');
@@ -439,7 +619,7 @@ export class ChatEngine {
     const pairKey = getDirectConversationKey(current.id, targetMember.id);
     const supabase = getSupabase();
 
-    if (supabase) {
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
         const { data: convMembers } = await supabase
           .from('conversation_members')
@@ -471,7 +651,6 @@ export class ChatEngine {
           }
         }
 
-        // Create new direct conversation
         const { data: newConv, error } = await supabase
           .from('conversations')
           .insert({
@@ -497,11 +676,10 @@ export class ChatEngine {
           };
         }
       } catch (err) {
-        console.warn('Supabase direct conversation creation error:', err);
+        console.error('[Kith] Supabase direct conversation exception:', err);
       }
     }
 
-    // Local fallback
     const localConvs = this.getLocalConversations(current.id);
     const existing = localConvs.find(
       c => c.type === 'direct' &&
@@ -528,9 +706,6 @@ export class ChatEngine {
     return newDirect;
   }
 
-  /**
-   * Retrieves messages for a conversation
-   */
   static async getMessages(
     conversationId: string,
     options: { limit?: number; before?: string } = {}
@@ -538,7 +713,7 @@ export class ChatEngine {
     const limit = options.limit || 50;
     const supabase = getSupabase();
 
-    if (supabase) {
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
         let query = supabase
           .from('messages')
@@ -581,13 +756,14 @@ export class ChatEngine {
           }));
 
           return { messages: mapped.reverse(), hasMore };
+        } else if (error) {
+          console.error('[Kith] Supabase getMessages error:', error);
         }
       } catch (err) {
-        console.warn('Supabase getMessages error:', err);
+        console.error('[Kith] Supabase getMessages exception:', err);
       }
     }
 
-    // Local fallback
     const all = this.getLocalMessages().filter(m => m.conversation_id === conversationId);
     let filtered = all;
     if (options.before) {
@@ -615,7 +791,9 @@ export class ChatEngine {
   }
 
   /**
-   * Sends a message with optional reply, attachments, and forwarding attribution
+   * Sends a message with optimistic delivery and robust error handling.
+   * If the Supabase write fails, updates message status to 'failed' rather than
+   * silently faking delivery.
    */
   static async sendMessage(
     conversationId: string,
@@ -635,19 +813,6 @@ export class ChatEngine {
     const msgId = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    let replySnippet = null;
-    if (replyToId) {
-      const localMsgs = this.getLocalMessages();
-      const parent = localMsgs.find(m => m.id === replyToId);
-      if (parent) {
-        replySnippet = {
-          id: parent.id,
-          sender_name: parent.sender_name || 'Friend',
-          content: parent.content
-        };
-      }
-    }
-
     const optimisticMessage: Message = {
       id: msgId,
       conversation_id: conversationId,
@@ -658,16 +823,15 @@ export class ChatEngine {
       content: trimmed,
       message_type: attachments && attachments.length > 0 ? 'file' : 'text',
       reply_to_message_id: replyToId || null,
-      reply_to: replySnippet,
       is_forwarded: metadata?.is_forwarded || false,
       forwarded_from: metadata?.forwarded_from || undefined,
       created_at: now,
       attachments: attachments || [],
       reactions: [],
-      status: 'sent'
+      status: 'pending'
     };
 
-    // Save locally
+    // Save to local cache with pending status
     const local = this.getLocalMessages();
     local.push(optimisticMessage);
     localStorage.setItem(LOCAL_MESSAGES_KEY, JSON.stringify(local));
@@ -676,11 +840,13 @@ export class ChatEngine {
     this.notifyMessageAction(optimisticMessage, 'insert');
     broadcast('message_insert', optimisticMessage);
 
-    // Persist to Supabase if configured
     const supabase = getSupabase();
-    if (supabase) {
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
-        const { error } = await supabase.from('messages').insert({
+        // Ensure sender member record exists in Supabase
+        await this.upsertMemberRecord(current);
+
+        const { error: insertErr } = await supabase.from('messages').insert({
           id: msgId,
           conversation_id: conversationId,
           sender_id: current.id,
@@ -691,9 +857,16 @@ export class ChatEngine {
           forwarded_from: metadata?.forwarded_from || null
         });
 
-        if (error) {
-          console.error('Supabase message insert failed:', error);
-        } else if (attachments && attachments.length > 0) {
+        if (insertErr) {
+          console.error('[Kith] Supabase message insert failed:', insertErr);
+          optimisticMessage.status = 'failed';
+          optimisticMessage.error = insertErr.message;
+          this.updateLocalMessageStatus(msgId, 'failed', insertErr.message);
+          this.notifyMessageAction(optimisticMessage, 'update');
+          return optimisticMessage;
+        }
+
+        if (attachments && attachments.length > 0) {
           const records = attachments.map(att => ({
             id: att.id,
             message_id: msgId,
@@ -704,19 +877,92 @@ export class ChatEngine {
             mime_type: att.mime_type,
             file_size: att.file_size
           }));
-          await supabase.from('attachments').insert(records);
+          const { error: attErr } = await supabase.from('attachments').insert(records);
+          if (attErr) {
+            console.error('[Kith] Supabase attachments insert error:', attErr);
+          }
         }
-      } catch (err) {
-        console.error('Supabase error while sending message:', err);
+
+        // Confirmed delivered to cloud
+        optimisticMessage.status = 'sent';
+        this.updateLocalMessageStatus(msgId, 'sent');
+        this.notifyMessageAction(optimisticMessage, 'update');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[Kith] Supabase message send exception:', msg);
+        optimisticMessage.status = 'failed';
+        optimisticMessage.error = msg;
+        this.updateLocalMessageStatus(msgId, 'failed', msg);
+        this.notifyMessageAction(optimisticMessage, 'update');
       }
+    } else {
+      // In local mode, immediate delivery confirmation
+      optimisticMessage.status = 'sent';
+      this.updateLocalMessageStatus(msgId, 'sent');
+      this.notifyMessageAction(optimisticMessage, 'update');
     }
 
     return optimisticMessage;
   }
 
-  /**
-   * Forwards a message to another conversation preserving attribution
-   */
+  private static updateLocalMessageStatus(messageId: string, status: 'sent' | 'failed' | 'pending', errorMsg?: string): void {
+    const local = this.getLocalMessages();
+    const item = local.find(m => m.id === messageId);
+    if (item) {
+      item.status = status;
+      if (errorMsg) item.error = errorMsg;
+      localStorage.setItem(LOCAL_MESSAGES_KEY, JSON.stringify(local));
+    }
+  }
+
+  static async retryFailedMessage(message: Message): Promise<Message> {
+    const supabase = getSupabase();
+    if (!supabase || isLocalModeExplicitlyEnabled()) {
+      return message;
+    }
+
+    const current = this.getCurrentMember();
+    if (!current) return message;
+
+    message.status = 'pending';
+    message.error = undefined;
+    this.updateLocalMessageStatus(message.id, 'pending');
+    this.notifyMessageAction(message, 'update');
+
+    try {
+      await this.upsertMemberRecord(current);
+      const { error } = await supabase.from('messages').insert({
+        id: message.id,
+        conversation_id: message.conversation_id,
+        sender_id: current.id,
+        content: message.content,
+        message_type: message.message_type,
+        reply_to_message_id: message.reply_to_message_id || null,
+        is_forwarded: message.is_forwarded || false,
+        forwarded_from: message.forwarded_from || null
+      });
+
+      if (error) {
+        message.status = 'failed';
+        message.error = error.message;
+        this.updateLocalMessageStatus(message.id, 'failed', error.message);
+        this.notifyMessageAction(message, 'update');
+      } else {
+        message.status = 'sent';
+        this.updateLocalMessageStatus(message.id, 'sent');
+        this.notifyMessageAction(message, 'update');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      message.status = 'failed';
+      message.error = msg;
+      this.updateLocalMessageStatus(message.id, 'failed', msg);
+      this.notifyMessageAction(message, 'update');
+    }
+
+    return message;
+  }
+
   static async forwardMessage(
     sourceMessage: Message,
     targetConversationId: string
@@ -749,14 +995,14 @@ export class ChatEngine {
     }
 
     const supabase = getSupabase();
-    if (supabase) {
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
         await supabase
           .from('messages')
           .update({ content: trimmed, updated_at: now })
           .eq('id', messageId);
       } catch (err) {
-        console.error('Supabase edit error:', err);
+        console.error('[Kith] Supabase edit error:', err);
       }
     }
   }
@@ -775,7 +1021,7 @@ export class ChatEngine {
     }
 
     const supabase = getSupabase();
-    if (supabase) {
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
         await supabase
           .from('messages')
@@ -785,7 +1031,7 @@ export class ChatEngine {
           })
           .eq('id', messageId);
       } catch (err) {
-        console.error('Supabase delete error:', err);
+        console.error('[Kith] Supabase delete error:', err);
       }
     }
   }
@@ -816,14 +1062,14 @@ export class ChatEngine {
       this.notifyReactionAction(conversationId, removed, 'delete');
       broadcast('reaction_delete', { reaction: removed, conversation_id: conversationId });
 
-      if (supabase) {
+      if (supabase && !isLocalModeExplicitlyEnabled()) {
         try {
           await supabase
             .from('message_reactions')
             .delete()
             .match({ message_id: messageId, member_id: current.id, emoji });
         } catch (err) {
-          console.error('Supabase reaction remove error:', err);
+          console.error('[Kith] Supabase reaction remove error:', err);
         }
       }
     } else {
@@ -839,7 +1085,7 @@ export class ChatEngine {
       this.notifyReactionAction(conversationId, reaction, 'insert');
       broadcast('reaction_insert', { reaction, conversation_id: conversationId });
 
-      if (supabase) {
+      if (supabase && !isLocalModeExplicitlyEnabled()) {
         try {
           await supabase.from('message_reactions').insert({
             id: reaction.id,
@@ -848,7 +1094,7 @@ export class ChatEngine {
             emoji
           });
         } catch (err) {
-          console.error('Supabase reaction insert error:', err);
+          console.error('[Kith] Supabase reaction insert error:', err);
         }
       }
     }
@@ -874,7 +1120,7 @@ export class ChatEngine {
     onProgress?.(30);
 
     const supabase = getSupabase();
-    if (supabase) {
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
         const { data, error } = await supabase.storage
           .from('kith_attachments')
@@ -904,14 +1150,13 @@ export class ChatEngine {
             download_url: urlData.publicUrl
           };
         } else {
-          console.warn('Supabase storage upload failed, falling back to local blob:', error);
+          console.warn('[Kith] Supabase storage upload returned error:', error);
         }
       } catch (err) {
-        console.warn('Supabase upload exception:', err);
+        console.error('[Kith] Supabase upload exception:', err);
       }
     }
 
-    // Local blob fallback
     onProgress?.(70);
     const blobUrl = URL.createObjectURL(file);
     onProgress?.(100);
@@ -943,7 +1188,7 @@ export class ChatEngine {
     broadcast('typing', payload);
 
     const supabase = getSupabase();
-    if (supabase) {
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
       try {
         const channel = supabase.channel(`typing:${conversationId}`);
         channel.send({
@@ -982,6 +1227,10 @@ export class ChatEngine {
     }
   }
 
+  /**
+   * Subscribes to Realtime updates for a specific conversation.
+   * Handles messages, reactions, typing, and attachment loading.
+   */
   static subscribeToConversation(
     conversationId: string,
     callbacks: {
@@ -1006,7 +1255,7 @@ export class ChatEngine {
     const activeClient = getSupabase();
     let supabaseChannel: RealtimeChannel | null = null;
 
-    if (activeClient) {
+    if (activeClient && !isLocalModeExplicitlyEnabled()) {
       try {
         supabaseChannel = activeClient
           .channel(`room:${conversationId}`)
@@ -1021,11 +1270,21 @@ export class ChatEngine {
             async (payload) => {
               if (payload.eventType === 'INSERT') {
                 const newRow = payload.new as any;
-                const { data: sender } = await activeClient
-                  .from('members')
-                  .select('display_name, avatar_color, avatar_url, nickname, status_text')
-                  .eq('id', newRow.sender_id)
-                  .maybeSingle();
+                const [{ data: sender }, { data: attachments }, { data: reactions }] = await Promise.all([
+                  activeClient
+                    .from('members')
+                    .select('display_name, avatar_color, avatar_url, nickname, status_text')
+                    .eq('id', newRow.sender_id)
+                    .maybeSingle(),
+                  activeClient
+                    .from('attachments')
+                    .select('*')
+                    .eq('message_id', newRow.id),
+                  activeClient
+                    .from('message_reactions')
+                    .select('*')
+                    .eq('message_id', newRow.id)
+                ]);
 
                 const msg: Message = {
                   id: newRow.id,
@@ -1042,6 +1301,8 @@ export class ChatEngine {
                   created_at: newRow.created_at,
                   updated_at: newRow.updated_at,
                   deleted_at: newRow.deleted_at,
+                  attachments: attachments || [],
+                  reactions: reactions || [],
                   status: 'sent'
                 };
                 callbacks.onMessage(msg, 'insert');
@@ -1080,7 +1341,7 @@ export class ChatEngine {
             }
           });
       } catch (err) {
-        console.warn('Supabase realtime subscription failed:', err);
+        console.warn('[Kith] Supabase realtime subscription failed:', err);
       }
     }
 
@@ -1116,7 +1377,14 @@ export class ChatEngine {
     };
   }
 
-  static getConnectionState(): 'connected' | 'reconnecting' | 'offline' {
+  static subscribeToMembers(callback: MemberUpdateCallback): () => void {
+    memberUpdateListeners.add(callback);
+    return () => {
+      memberUpdateListeners.delete(callback);
+    };
+  }
+
+  static getConnectionState(): ConnectionState {
     return currentConnectionState;
   }
 

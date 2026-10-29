@@ -6,14 +6,16 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Member, Conversation, Message, Attachment, TypingIndicator, ConnectionState } from './types';
 import { ChatEngine } from './lib/chatEngine';
-import { EntryScreen } from './components/EntryScreen';
+import { getSupabase } from './lib/supabaseClient';
+import { AuthScreen } from './components/AuthScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { LightboxModal } from './components/LightboxModal';
 import { SupabaseSetupModal } from './components/SupabaseSetupModal';
-import { ProfileModal } from './components/ProfileModal';
+import { AccountSettingsModal } from './components/AccountSettingsModal';
 import { FriendProfileCard } from './components/FriendProfileCard';
 import { ForwardModal } from './components/ForwardModal';
+
 
 export default function App() {
   const [currentMember, setCurrentMember] = useState<Member | null>(() => {
@@ -68,6 +70,35 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // Supabase Auth session restoration and state listener
+  useEffect(() => {
+    ChatEngine.fetchAuthenticatedMember().then((member) => {
+      if (member) {
+        setCurrentMember(member);
+      }
+    });
+
+    const supabase = getSupabase();
+    if (supabase) {
+      const {
+        data: { subscription }
+      } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+          if (session?.user) {
+            const member = await ChatEngine.fetchAuthenticatedMember();
+            if (member) {
+              setCurrentMember(member);
+            }
+          }
+        } else if (event === 'SIGNED_OUT') {
+          setCurrentMember(null);
+        }
+      });
+      return () => subscription.unsubscribe();
+    }
+  }, []);
+
+
   // Handle browser back button on mobile
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
@@ -105,15 +136,24 @@ export default function App() {
     refreshData();
   }, [refreshData]);
 
-  // Subscribe to presence
+  // Subscribe to presence and member directory updates
   useEffect(() => {
+    if (currentMember) {
+      ChatEngine.initGlobalRealtime();
+    }
     const unsubPresence = ChatEngine.subscribeToPresence((memberId, isOnline) => {
       setMembers((prev) =>
         prev.map((m) => (m.id === memberId ? { ...m, is_online: isOnline } : m))
       );
     });
-    return () => unsubPresence();
-  }, []);
+    const unsubMembers = ChatEngine.subscribeToMembers((newMembers) => {
+      setMembers(newMembers);
+    });
+    return () => {
+      unsubPresence();
+      unsubMembers();
+    };
+  }, [currentMember]);
 
   // Load messages and subscribe to active conversation
   useEffect(() => {
@@ -144,13 +184,15 @@ export default function App() {
         onMessage: (msg, action) => {
           setMessages((prev) => {
             if (action === 'insert') {
-              // Avoid duplicates if already exists
-              if (prev.some((m) => m.id === msg.id)) {
-                return prev.map((m) => (m.id === msg.id ? msg : m));
+              const idx = prev.findIndex((m) => m.id === msg.id);
+              if (idx >= 0) {
+                const updated = [...prev];
+                updated[idx] = { ...prev[idx], ...msg, status: 'sent' };
+                return updated;
               }
               return [...prev, msg];
             } else if (action === 'update' || action === 'delete') {
-              return prev.map((m) => (m.id === msg.id ? msg : m));
+              return prev.map((m) => (m.id === msg.id ? { ...m, ...msg } : m));
             }
             return prev;
           });
@@ -249,6 +291,11 @@ export default function App() {
     await ChatEngine.sendMessage(activeConversationId, content, replyToId, attachments);
   };
 
+  // Retry failed message
+  const handleRetryMessage = async (msg: Message) => {
+    await ChatEngine.retryFailedMessage(msg);
+  };
+
   // Forward message
   const handleForwardMessage = async (targetConvId: string) => {
     if (!forwardingMessage) return;
@@ -318,18 +365,30 @@ export default function App() {
     updated_at: new Date().toISOString()
   };
 
+  const handleSignOut = async () => {
+    await ChatEngine.signOut();
+    setCurrentMember(null);
+    setMessages([]);
+    setConversations([]);
+    setMembers([]);
+  };
+
   if (!currentMember) {
     return (
-      <EntryScreen
-        onEnter={handleEnterApp}
-        currentMember={currentMember}
-        onClearData={() => {
-          setCurrentMember(null);
-          setMessages([]);
-          setConversations([]);
-          setMembers([]);
-        }}
-      />
+      <>
+        <AuthScreen
+          onAuthenticated={(member) => {
+            setCurrentMember(member);
+            refreshData();
+          }}
+          onOpenConfigModal={() => setIsSupabaseModalOpen(true)}
+        />
+        <SupabaseSetupModal
+          isOpen={isSupabaseModalOpen}
+          onClose={() => setIsSupabaseModalOpen(false)}
+          onConfigUpdated={() => refreshData()}
+        />
+      </>
     );
   }
 
@@ -385,6 +444,7 @@ export default function App() {
           lastReadTime={ChatEngine.getLastReadTime(activeConversationId)}
           onForwardMessage={(msg) => setForwardingMessage(msg)}
           onOpenFriendProfile={(m) => setInspectingMember(m)}
+          onRetryMessage={handleRetryMessage}
         />
       </div>
 
@@ -401,13 +461,15 @@ export default function App() {
         onConfigUpdated={() => refreshData()}
       />
 
-      {/* Profile Editor Modal */}
-      <ProfileModal
+      {/* Account Settings & Profile Modal */}
+      <AccountSettingsModal
         isOpen={isProfileModalOpen}
         onClose={() => setIsProfileModalOpen(false)}
         currentMember={currentMember}
         onSaveProfile={handleSaveProfile}
+        onSignOut={handleSignOut}
       />
+
 
       {/* Friend Profile Card */}
       <FriendProfileCard

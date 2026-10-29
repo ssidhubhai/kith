@@ -9,9 +9,9 @@ import {
   Smile,
   User
 } from 'lucide-react';
-import { Conversation, Member } from '../types';
+import { Conversation, Member, BackendInfo } from '../types';
 import { formatMessageTime } from '../utils/messageGrouping';
-import { isSupabaseConfigured } from '../lib/supabaseClient';
+import { getCurrentBackendInfo, subscribeToBackendInfo } from '../lib/supabaseClient';
 import { getMemberAvatarPalette } from '../utils/avatarUtils';
 
 interface SidebarProps {
@@ -56,7 +56,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     (m.nickname && m.nickname.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
-  const isConnected = isSupabaseConfigured();
+  const [backendInfo, setBackendInfo] = useState<BackendInfo>(getCurrentBackendInfo());
+
+  React.useEffect(() => {
+    const unsub = subscribeToBackendInfo((info) => setBackendInfo(info));
+    return () => unsub();
+  }, []);
+
   const currentPalette = getMemberAvatarPalette(currentMember.avatar_color || currentMember.id || currentMember.display_name);
   const onlineCount = members.filter(m => m.is_online).length;
 
@@ -90,12 +96,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={onOpenSupabaseModal}
-          title={isConnected ? 'Connected to live Supabase' : 'Local Mesh active. Tap to configure Supabase.'}
+          title={backendInfo.message || 'Supabase Backend Status'}
+          aria-label={`Database status: ${backendInfo.status}`}
           className="flex items-center gap-1.5 text-xs text-[#827D8B] hover:text-[#24212B] transition-all cursor-pointer py-1.5 px-2.5 rounded-xl border border-[#EAE5E0] bg-white hover:border-[#8B7CF6]/40 shadow-2xs min-h-[36px]"
         >
-          <Database className={`w-3.5 h-3.5 ${isConnected ? 'text-[#8B7CF6]' : 'text-[#827D8B]'}`} />
-          <span className="text-[11px] font-semibold">
-            {isConnected ? 'Supabase' : 'Local'}
+          <span
+            className={`w-2 h-2 rounded-full shrink-0 ${
+              backendInfo.status === 'connected'
+                ? 'bg-emerald-500 ring-2 ring-emerald-100'
+                : backendInfo.status === 'connecting' || backendInfo.status === 'reconnecting'
+                ? 'bg-blue-500 animate-pulse'
+                : backendInfo.status === 'local_only'
+                ? 'bg-amber-400'
+                : 'bg-rose-500 ring-2 ring-rose-100'
+            }`}
+          />
+          <span className="text-[11px] font-semibold text-[#24212B]">
+            {backendInfo.status === 'connected'
+              ? 'Supabase'
+              : backendInfo.status === 'connecting'
+              ? 'Connecting'
+              : backendInfo.status === 'reconnecting'
+              ? 'Reconnecting'
+              : backendInfo.status === 'missing_schema_or_permissions'
+              ? 'Fix Schema'
+              : backendInfo.status === 'local_only'
+              ? 'Local Demo'
+              : 'Connect DB'}
           </span>
         </button>
       </div>
@@ -130,13 +157,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="text-xs font-semibold text-[#24212B] truncate">
                   {currentMember.display_name}
                 </span>
-                {currentMember.nickname && (
-                  <span className="text-[10px] text-[#827D8B] truncate">
-                    @{currentMember.nickname}
+                {(currentMember.username || currentMember.nickname) && (
+                  <span className="text-[10px] text-[#827D8B] truncate font-mono">
+                    @{currentMember.username || currentMember.nickname}
                   </span>
                 )}
                 <span className="text-[10px] text-[#827D8B] shrink-0">(You)</span>
               </div>
+
               {currentMember.status_text ? (
                 <div className="text-[10px] text-[#8B7CF6] font-medium truncate flex items-center gap-1 mt-0.5">
                   <Smile className="w-2.5 h-2.5 shrink-0" />

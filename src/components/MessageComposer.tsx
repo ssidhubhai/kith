@@ -45,6 +45,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   const [showPicker, setShowPicker] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [composerNotice, setComposerNotice] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -66,6 +67,13 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
     }
   }, [content]);
 
+  // Auto-dismiss notice banner
+  useEffect(() => {
+    if (!composerNotice) return;
+    const timer = setTimeout(() => setComposerNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [composerNotice]);
+
   const handleContentChange = (val: string) => {
     setContent(val);
     onDraftChange?.(val);
@@ -79,7 +87,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
     for (const file of list) {
       const validation = validateFileSize(file.size);
       if (!validation.valid) {
-        alert(validation.error);
+        setComposerNotice(validation.error || 'File validation failed');
         continue;
       }
 
@@ -175,7 +183,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
 
     const stillUploading = queuedUploads.some((u) => !u.attachment && !u.error);
     if (stillUploading) {
-      alert('Please wait for file uploads to finish.');
+      setComposerNotice('Please wait for file uploads to finish.');
       return;
     }
 
@@ -235,6 +243,21 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
         <div className="absolute inset-0 z-30 bg-[#F0ECFF]/95 border-2 border-dashed border-[#8B7CF6] rounded-xl flex flex-col items-center justify-center pointer-events-none">
           <p className="text-sm font-semibold text-[#8B7CF6]">Drop files here to share with friends</p>
           <p className="text-xs text-[#827D8B]">Photos, videos and documents up to 48 MB</p>
+        </div>
+      )}
+
+      {/* Notice / Alert banner */}
+      {composerNotice && (
+        <div className="mb-2 px-3 py-1.5 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-xs text-rose-700 animate-fadeIn">
+          <span>{composerNotice}</span>
+          <button
+            type="button"
+            onClick={() => setComposerNotice(null)}
+            aria-label="Dismiss notice"
+            className="p-1 hover:text-rose-900 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
