@@ -1,0 +1,6 @@
+{
+  "name": "Kith — Minimal Friend Messenger",
+  "description": "An ultra-fast, minimalist, typography-first real-time messaging web app for close friend groups with instant file sharing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
