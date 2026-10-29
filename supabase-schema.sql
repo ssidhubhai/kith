@@ -11,10 +11,20 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS public.members (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     display_name TEXT NOT NULL,
-    avatar_color TEXT NOT NULL DEFAULT '#171717',
+    nickname TEXT,
+    avatar_url TEXT,
+    avatar_color TEXT NOT NULL DEFAULT '#8B7CF6',
+    status_text TEXT,
+    hide_last_seen BOOLEAN NOT NULL DEFAULT false,
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
+
+-- Idempotent column additions for existing installations:
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS nickname TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS status_text TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS hide_last_seen BOOLEAN NOT NULL DEFAULT false;
 
 -- 3. Create Conversations Table
 CREATE TABLE IF NOT EXISTS public.conversations (
@@ -42,10 +52,15 @@ CREATE TABLE IF NOT EXISTS public.messages (
     content TEXT NOT NULL,
     message_type TEXT NOT NULL DEFAULT 'text' CHECK (message_type IN ('text', 'file', 'system')),
     reply_to_message_id UUID REFERENCES public.messages(id) ON DELETE SET NULL,
+    is_forwarded BOOLEAN NOT NULL DEFAULT false,
+    forwarded_from TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     updated_at TIMESTAMPTZ,
     deleted_at TIMESTAMPTZ
 );
+
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS is_forwarded BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS forwarded_from TEXT;
 
 -- 6. Create Attachments Table
 CREATE TABLE IF NOT EXISTS public.attachments (
@@ -157,10 +172,24 @@ CREATE POLICY "Allow reactions access" ON public.message_reactions
     FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 
 -- ==============================================================================
--- STORAGE BUCKET CONFIGURATION INSTRUCTIONS
+-- STORAGE BUCKET CONFIGURATION & POLICIES
 -- ==============================================================================
--- In Supabase Dashboard -> Storage:
--- 1. Create a bucket named "kith_attachments"
--- 2. Set Public Bucket: ON (or use signed URLs for private access)
--- 3. File size limit: 48MB (48 * 1024 * 1024 = 50331648 bytes)
--- 4. Set storage policy: Allow anon upload and select.
+-- Create the kith_attachments bucket if not already created
+INSERT INTO storage.buckets (id, name, public, file_size_limit)
+VALUES ('kith_attachments', 'kith_attachments', true, 52428800)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- Allow public view/download of attachments
+CREATE POLICY "Allow public read on kith_attachments"
+ON storage.objects FOR SELECT
+USING (bucket_id = 'kith_attachments');
+
+-- Allow friends to upload attachments
+CREATE POLICY "Allow anon upload on kith_attachments"
+ON storage.objects FOR INSERT
+WITH CHECK (bucket_id = 'kith_attachments');
+
+-- Allow friends to delete/update attachments
+CREATE POLICY "Allow anon delete on kith_attachments"
+ON storage.objects FOR DELETE
+USING (bucket_id = 'kith_attachments');

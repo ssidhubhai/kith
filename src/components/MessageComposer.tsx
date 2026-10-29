@@ -19,6 +19,8 @@ interface MessageComposerProps {
   replyingTo: Message | null;
   onCancelReply: () => void;
   onTyping: () => void;
+  draft?: string;
+  onDraftChange?: (draft: string) => void;
 }
 
 interface QueuedUpload {
@@ -34,9 +36,11 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   onSendMessage,
   replyingTo,
   onCancelReply,
-  onTyping
+  onTyping,
+  draft = '',
+  onDraftChange
 }) => {
-  const [content, setContent] = useState('');
+  const [content, setContent] = useState(draft);
   const [queuedUploads, setQueuedUploads] = useState<QueuedUpload[]>([]);
   const [showPicker, setShowPicker] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -45,16 +49,29 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Sync draft when conversation changes
+  useEffect(() => {
+    setContent(draft);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  }, [conversationId, draft]);
+
   // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
       const scrollHeight = textareaRef.current.scrollHeight;
-      textareaRef.current.style.height = `${Math.min(scrollHeight, 160)}px`;
+      textareaRef.current.style.height = `${Math.min(scrollHeight, 140)}px`;
     }
   }, [content]);
 
-  // Handle file selection
+  const handleContentChange = (val: string) => {
+    setContent(val);
+    onDraftChange?.(val);
+    onTyping();
+  };
+
   const handleFilesAdded = async (files: FileList | File[]) => {
     const list = Array.from(files);
     if (list.length === 0) return;
@@ -75,7 +92,6 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
 
       setQueuedUploads((prev) => [...prev, queuedItem]);
 
-      // Start upload in background
       try {
         const attachment = await ChatEngine.uploadFile(file, conversationId, (pct) => {
           setQueuedUploads((prev) =>
@@ -101,12 +117,10 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
     }
   };
 
-  // Remove queued file
   const handleRemoveUpload = (uploadId: string) => {
     setQueuedUploads((prev) => prev.filter((item) => item.id !== uploadId));
   };
 
-  // Clipboard paste support (e.g. pasted screenshot or image)
   const handlePaste = (e: React.ClipboardEvent) => {
     const items = e.clipboardData.items;
     const pastedFiles: File[] = [];
@@ -124,7 +138,6 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
     }
   };
 
-  // Drag and drop support
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(true);
@@ -145,8 +158,12 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
+      // On mobile keyboards, let user create newlines if they tap return, or send
+      // If Shift key is not pressed on desktop, send
+      if (window.innerWidth >= 768) {
+        e.preventDefault();
+        handleSubmit();
+      }
     }
   };
 
@@ -168,11 +185,14 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
     try {
       await onSendMessage(trimmed, replyingTo?.id, readyAttachments);
       setContent('');
+      onDraftChange?.('');
       setQueuedUploads([]);
       if (replyingTo) onCancelReply();
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
-        textareaRef.current.focus();
+        if (window.innerWidth >= 768) {
+          textareaRef.current.focus();
+        }
       }
     } finally {
       setIsSubmitting(false);
@@ -180,14 +200,11 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   };
 
   const handleSelectEmoji = (emoji: string) => {
-    setContent((prev) => prev + emoji);
-    if (textareaRef.current) {
-      textareaRef.current.focus();
-    }
+    const updated = content + emoji;
+    handleContentChange(updated);
   };
 
   const handleSelectGif = async (gifUrl: string, title: string) => {
-    // Send GIF immediately as an attachment or message
     const gifAttachment: Attachment = {
       id: crypto.randomUUID(),
       conversation_id: conversationId,
@@ -211,29 +228,29 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="relative p-3 md:p-4 bg-white border-t border-[#E5E5E5]"
+      className="relative p-2.5 sm:p-3 md:p-4 bg-[#FAF8F5] border-t border-[#EAE5E0] safe-area-bottom shrink-0"
     >
       {/* Drag & Drop Overlay */}
       {isDragging && (
-        <div className="absolute inset-0 z-30 bg-[#FAFAFA]/95 border-2 border-dashed border-[#171717] flex flex-col items-center justify-center pointer-events-none">
-          <p className="text-sm font-semibold text-[#171717]">Drop files here to share</p>
-          <p className="text-xs text-[#737373]">Files up to 48 MB supported</p>
+        <div className="absolute inset-0 z-30 bg-[#F0ECFF]/95 border-2 border-dashed border-[#8B7CF6] rounded-xl flex flex-col items-center justify-center pointer-events-none">
+          <p className="text-sm font-semibold text-[#8B7CF6]">Drop files here to share with friends</p>
+          <p className="text-xs text-[#827D8B]">Photos, videos and documents up to 48 MB</p>
         </div>
       )}
 
       {/* Replying banner */}
       {replyingTo && (
-        <div className="mb-2 px-3 py-1.5 bg-[#FAFAFA] border-l-2 border-[#171717] flex items-center justify-between text-xs">
+        <div className="mb-2 px-3 py-1.5 bg-[#F0ECFF] border-l-2 border-[#8B7CF6] rounded-r-xl flex items-center justify-between text-xs">
           <div className="flex items-center gap-1.5 truncate">
-            <span className="text-[#737373]">Replying to</span>
-            <span className="font-semibold text-[#171717]">{replyingTo.sender_name}:</span>
-            <span className="text-[#737373] truncate">{replyingTo.content}</span>
+            <span className="text-[#827D8B]">Replying to</span>
+            <span className="font-semibold text-[#8B7CF6]">{replyingTo.sender_name}:</span>
+            <span className="text-[#24212B] truncate">{replyingTo.content}</span>
           </div>
           <button
             type="button"
             onClick={onCancelReply}
             aria-label="Cancel reply"
-            className="p-1 text-[#737373] hover:text-[#171717] cursor-pointer"
+            className="p-1 text-[#827D8B] hover:text-[#24212B] cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -242,28 +259,30 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
 
       {/* Queued uploads list */}
       {queuedUploads.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-2">
+        <div className="mb-2.5 flex flex-wrap gap-2">
           {queuedUploads.map((item) => (
             <div
               key={item.id}
-              className="px-2.5 py-1.5 bg-[#FAFAFA] border border-[#E5E5E5] flex items-center gap-2 text-xs"
+              className="px-3 py-1.5 bg-white border border-[#EAE5E0] rounded-xl flex items-center gap-2.5 text-xs shadow-2xs"
             >
-              <FileText className="w-3.5 h-3.5 text-[#171717] shrink-0" />
-              <div className="min-w-0 max-w-[140px]">
-                <div className="truncate text-[11px] font-medium text-[#171717]">
+              <div className="p-1 bg-[#F0ECFF] rounded-md text-[#8B7CF6]">
+                <FileText className="w-3.5 h-3.5" />
+              </div>
+              <div className="min-w-0 max-w-[130px] sm:max-w-[160px]">
+                <div className="truncate text-[11px] font-semibold text-[#24212B]">
                   {item.file.name}
                 </div>
-                <div className="text-[10px] tabular-nums text-[#737373]">
+                <div className="text-[10px] tabular-nums text-[#827D8B]">
                   {formatFileSize(item.file.size)}
                   {item.progress < 100 && !item.error && ` · ${item.progress}%`}
                 </div>
               </div>
 
               {item.progress < 100 && !item.error ? (
-                <Loader2 className="w-3 h-3 animate-spin text-[#737373]" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#8B7CF6]" />
               ) : item.error ? (
                 <span title={item.error}>
-                  <AlertCircle className="w-3 h-3 text-red-600" />
+                  <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
                 </span>
               ) : null}
 
@@ -271,33 +290,30 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
                 type="button"
                 onClick={() => handleRemoveUpload(item.id)}
                 aria-label={`Remove upload ${item.file.name}`}
-                className="text-[#737373] hover:text-[#171717] cursor-pointer"
+                className="text-[#827D8B] hover:text-[#24212B] cursor-pointer p-0.5"
               >
-                <X className="w-3 h-3" />
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           ))}
         </div>
       )}
 
-      {/* Composer Input Box */}
-      <div className="relative border border-[#E5E5E5] focus-within:border-[#171717] bg-[#FAFAFA] focus-within:bg-white transition-colors">
+      {/* Composer Input Surface */}
+      <div className="relative border border-[#EAE5E0] rounded-2xl bg-white focus-within:border-[#8B7CF6] focus-within:ring-2 focus-within:ring-[#8B7CF6]/20 transition-all shadow-2xs">
         <textarea
           ref={textareaRef}
           value={content}
-          onChange={(e) => {
-            setContent(e.target.value);
-            onTyping();
-          }}
+          onChange={(e) => handleContentChange(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           rows={1}
-          placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
-          className="w-full resize-none px-3.5 py-2.5 text-sm text-[#171717] placeholder-[#A3A3A3] bg-transparent focus:outline-none min-h-[42px] max-h-40 leading-relaxed"
+          placeholder="Write a message... (Shift+Enter for newline)"
+          className="w-full resize-none px-3.5 py-2.5 sm:px-4 sm:py-3 text-base sm:text-sm text-[#24212B] placeholder-[#A39E98] bg-transparent focus:outline-none min-h-[44px] max-h-36 leading-relaxed"
         />
 
-        {/* Toolbar below textarea */}
-        <div className="flex items-center justify-between px-3 py-1.5 border-t border-[#F0F0F0]">
+        {/* Toolbar */}
+        <div className="flex items-center justify-between px-2.5 py-1.5 sm:px-3 sm:py-2 border-t border-[#F4F0EA]">
           <div className="flex items-center gap-1">
             {/* Attachment Button */}
             <input
@@ -316,10 +332,10 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
               type="button"
               onClick={() => fileInputRef.current?.click()}
               aria-label="Attach file"
-              title="Attach files or photos (up to 48 MB)"
-              className="p-1.5 text-[#737373] hover:text-[#171717] transition-colors cursor-pointer"
+              title="Attach photos or files (up to 48 MB)"
+              className="p-2 sm:p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] rounded-xl transition-colors cursor-pointer"
             >
-              <Paperclip className="w-4 h-4" />
+              <Paperclip className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
 
             {/* Emoji & GIF Picker Button */}
@@ -327,15 +343,15 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
               type="button"
               onClick={() => setShowPicker(!showPicker)}
               aria-label="Add emoji or GIF"
-              title="Emoji and GIF picker"
-              className="p-1.5 text-[#737373] hover:text-[#171717] transition-colors cursor-pointer"
+              title="Emoji & GIF picker"
+              className="p-2 sm:p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] rounded-xl transition-colors cursor-pointer"
             >
-              <Smile className="w-4 h-4" />
+              <Smile className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="hidden sm:inline text-[10px] text-[#A3A3A3] select-none">
+            <span className="hidden md:inline text-[11px] text-[#A39E98] select-none">
               Shift+Enter for newline
             </span>
             <button
@@ -343,14 +359,14 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
               onClick={handleSubmit}
               disabled={!hasContent || isSubmitting}
               aria-label="Send message"
-              className="px-3 py-1.5 bg-[#171717] hover:bg-[#262626] active:bg-black text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+              className="min-h-[38px] px-3.5 py-1.5 bg-[#8B7CF6] hover:bg-[#7868E8] active:bg-[#6D59D6] text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-30 disabled:cursor-not-allowed"
             >
               {isSubmitting ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
                 <>
                   <span>Send</span>
-                  <Send className="w-3 h-3" />
+                  <Send className="w-3.5 h-3.5" />
                 </>
               )}
             </button>

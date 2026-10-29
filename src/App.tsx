@@ -4,13 +4,16 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Member, Conversation, Message, Attachment, TypingIndicator } from './types';
-import { ChatEngine, DEFAULT_FRIENDS } from './lib/chatEngine';
+import { Member, Conversation, Message, Attachment, TypingIndicator, ConnectionState } from './types';
+import { ChatEngine } from './lib/chatEngine';
 import { EntryScreen } from './components/EntryScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { LightboxModal } from './components/LightboxModal';
 import { SupabaseSetupModal } from './components/SupabaseSetupModal';
+import { ProfileModal } from './components/ProfileModal';
+import { FriendProfileCard } from './components/FriendProfileCard';
+import { ForwardModal } from './components/ForwardModal';
 
 export default function App() {
   const [currentMember, setCurrentMember] = useState<Member | null>(() => {
@@ -20,11 +23,10 @@ export default function App() {
     const saved = ChatEngine.getCurrentMember();
     if (saved) return saved;
     if (autostart === '1') {
-      const alex = DEFAULT_FRIENDS[0];
       const member: Member = {
-        id: alex.id,
-        display_name: alex.display_name,
-        avatar_color: alex.avatar_color,
+        id: crypto.randomUUID(),
+        display_name: 'Member',
+        avatar_color: '#8B7CF6',
         last_seen_at: new Date().toISOString(),
         created_at: new Date().toISOString(),
         is_online: true
@@ -43,10 +45,42 @@ export default function App() {
   const [typingIndicators, setTypingIndicators] = useState<TypingIndicator[]>([]);
   const [activeAttachmentLightbox, setActiveAttachmentLightbox] = useState<Attachment | null>(null);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
-  const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>('chat');
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [inspectingMember, setInspectingMember] = useState<Member | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [connectionState, setConnectionState] = useState<ConnectionState>('connected');
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      return 'sidebar';
+    }
+    return 'chat';
+  });
 
   const unsubscribeConversationRef = useRef<(() => void) | null>(null);
   const typingTimeoutMap = useRef<Map<string, NodeJS.Timeout>>(new Map());
+
+  // Connection state listener
+  useEffect(() => {
+    const unsub = ChatEngine.subscribeToConnectionState((state) => {
+      setConnectionState(state);
+    });
+    return () => unsub();
+  }, []);
+
+  // Handle browser back button on mobile
+  useEffect(() => {
+    const handlePopState = (e: PopStateEvent) => {
+      if (e.state && e.state.view === 'chat' && e.state.convId) {
+        setActiveConversationId(e.state.convId);
+        setMobileView('chat');
+      } else {
+        setMobileView('sidebar');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Load members and conversations when user is logged in
   const refreshData = useCallback(async () => {
@@ -121,7 +155,7 @@ export default function App() {
             return prev;
           });
 
-          // Refresh conversations to update last message preview
+          // Refresh conversations to update last message preview and unread counts
           refreshData();
         },
         onReaction: (reaction, action) => {
@@ -198,10 +232,10 @@ export default function App() {
     refreshData();
   };
 
-  // Change display name
-  const handleUpdateDisplayName = async (newName: string) => {
-    const member = await ChatEngine.setCurrentMember(newName, currentMember?.id);
-    setCurrentMember(member);
+  // Profile save
+  const handleSaveProfile = async (updates: Partial<Member>) => {
+    const updated = await ChatEngine.updateCurrentMemberProfile(updates);
+    setCurrentMember(updated);
     refreshData();
   };
 
@@ -213,6 +247,17 @@ export default function App() {
   ) => {
     if (!activeConversationId) return;
     await ChatEngine.sendMessage(activeConversationId, content, replyToId, attachments);
+  };
+
+  // Forward message
+  const handleForwardMessage = async (targetConvId: string) => {
+    if (!forwardingMessage) return;
+    await ChatEngine.forwardMessage(forwardingMessage, targetConvId);
+    setForwardingMessage(null);
+    setActiveConversationId(targetConvId);
+    setMobileView('chat');
+    window.history.pushState({ view: 'chat', convId: targetConvId }, '');
+    refreshData();
   };
 
   // Edit message
@@ -237,12 +282,24 @@ export default function App() {
     await refreshData();
     setActiveConversationId(directConv.id);
     setMobileView('chat');
+    window.history.pushState({ view: 'chat', convId: directConv.id }, '');
   };
 
   // Select conversation
   const handleSelectConversation = (convId: string) => {
     setActiveConversationId(convId);
     setMobileView('chat');
+    if (window.history.state?.view !== 'chat' || window.history.state?.convId !== convId) {
+      window.history.pushState({ view: 'chat', convId }, '');
+    }
+  };
+
+  // Back to conversation list on mobile
+  const handleBackToSidebar = () => {
+    setMobileView('sidebar');
+    if (window.history.state?.view === 'chat') {
+      window.history.back();
+    }
   };
 
   // Broadcast typing
@@ -262,16 +319,27 @@ export default function App() {
   };
 
   if (!currentMember) {
-    return <EntryScreen onEnter={handleEnterApp} currentMember={currentMember} />;
+    return (
+      <EntryScreen
+        onEnter={handleEnterApp}
+        currentMember={currentMember}
+        onClearData={() => {
+          setCurrentMember(null);
+          setMessages([]);
+          setConversations([]);
+          setMembers([]);
+        }}
+      />
+    );
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-white text-[#171717] font-sans antialiased">
-      {/* Sidebar (Desktop visible, Mobile conditionally visible) */}
+    <div className="flex h-[100dvh] w-full overflow-hidden bg-[#FAF8F5] text-[#24212B] font-sans antialiased">
+      {/* Sidebar (Desktop always visible, Mobile conditionally visible) */}
       <div
         className={`${
-          mobileView === 'sidebar' ? 'block' : 'hidden'
-        } md:block h-full w-full md:w-auto shrink-0`}
+          mobileView === 'sidebar' ? 'flex' : 'hidden'
+        } md:flex flex-col h-full w-full md:w-80 lg:w-88 shrink-0 border-r border-[#EAE5E0] bg-[#FAF8F5]`}
       >
         <Sidebar
           conversations={conversations}
@@ -281,11 +349,13 @@ export default function App() {
           currentMember={currentMember}
           onStartDirectChat={handleStartDirectChat}
           onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
-          onUpdateDisplayName={handleUpdateDisplayName}
+          onUpdateDisplayName={(newName) => handleSaveProfile({ display_name: newName })}
+          onOpenProfileModal={() => setIsProfileModalOpen(true)}
+          onOpenFriendProfile={(m) => setInspectingMember(m)}
         />
       </div>
 
-      {/* Main Chat Area (Desktop visible, Mobile conditionally visible) */}
+      {/* Main Chat Area (Desktop always visible, Mobile conditionally visible) */}
       <div
         className={`${
           mobileView === 'chat' ? 'flex' : 'hidden'
@@ -304,9 +374,17 @@ export default function App() {
           onDeleteMessage={handleDeleteMessage}
           onToggleReaction={handleToggleReaction}
           onOpenAttachment={(att) => setActiveAttachmentLightbox(att)}
-          onBackToSidebar={() => setMobileView('sidebar')}
+          onBackToSidebar={handleBackToSidebar}
           onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
           onTyping={handleTyping}
+          draft={drafts[activeConversationId] || ''}
+          onDraftChange={(newDraft) =>
+            setDrafts((prev) => ({ ...prev, [activeConversationId]: newDraft }))
+          }
+          connectionState={connectionState}
+          lastReadTime={ChatEngine.getLastReadTime(activeConversationId)}
+          onForwardMessage={(msg) => setForwardingMessage(msg)}
+          onOpenFriendProfile={(m) => setInspectingMember(m)}
         />
       </div>
 
@@ -321,6 +399,32 @@ export default function App() {
         isOpen={isSupabaseModalOpen}
         onClose={() => setIsSupabaseModalOpen(false)}
         onConfigUpdated={() => refreshData()}
+      />
+
+      {/* Profile Editor Modal */}
+      <ProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        currentMember={currentMember}
+        onSaveProfile={handleSaveProfile}
+      />
+
+      {/* Friend Profile Card */}
+      <FriendProfileCard
+        member={inspectingMember}
+        onClose={() => setInspectingMember(null)}
+        onStartDirectChat={handleStartDirectChat}
+        isCurrentUser={inspectingMember?.id === currentMember.id}
+        onEditProfile={() => setIsProfileModalOpen(true)}
+      />
+
+      {/* Message Forward Modal */}
+      <ForwardModal
+        isOpen={Boolean(forwardingMessage)}
+        onClose={() => setForwardingMessage(null)}
+        message={forwardingMessage}
+        conversations={conversations}
+        onForward={handleForwardMessage}
       />
     </div>
   );

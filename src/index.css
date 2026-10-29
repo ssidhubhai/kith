@@ -1,23 +1,61 @@
 @import "tailwindcss";
 
+:root {
+  --bg-main: #FAF8F5;
+  --text-primary: #24212B;
+  --text-secondary: #827D8B;
+  --accent: #8B7CF6;
+  --accent-hover: #7868E8;
+  --surface-lavender: #F0ECFF;
+  --surface-neutral: #F4F0EA;
+  --surface-white: #FFFFFF;
+  --border-warm: #EAE5E0;
+  --color-success: #10B981;
+  --color-error: #F43F5E;
+}
+
 @layer base {
   * {
-    border-color: #E5E5E5;
+    border-color: var(--border-warm);
+    box-sizing: border-box;
   }
   
-  html, body {
+  html, body, #root {
+    height: 100%;
+    height: 100dvh;
     margin: 0;
     padding: 0;
     font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    color: #171717;
-    background-color: #FFFFFF;
+    color: var(--text-primary);
+    background-color: var(--bg-main);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  ::selection {
+    background-color: var(--surface-lavender);
+    color: #5B48D9;
   }
 }
 
-/* Minimal subtle scrollbar */
+/* Safe area utility classes */
+.safe-area-bottom {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+}
+
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Ensure break-words works cleanly on all browsers */
+.message-content {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Warm subtle scrollbar */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
@@ -28,10 +66,19 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #E5E5E5;
-  border-radius: 0px;
+  background: var(--border-warm);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #A3A3A3;
+  background: #D4CDC6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

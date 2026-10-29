@@ -5,11 +5,17 @@
 export interface Member {
   id: string;
   display_name: string;
+  nickname?: string;
+  avatar_url?: string;
   avatar_color: string;
+  status_text?: string;
+  hide_last_seen?: boolean;
   last_seen_at: string;
   created_at: string;
   is_online?: boolean;
 }
+
+export type ConnectionState = 'connected' | 'reconnecting' | 'offline';
 
 export type ConversationType = 'group' | 'direct';
 
@@ -60,10 +66,13 @@ export interface Message {
   sender_id: string;
   sender_name?: string;
   sender_avatar_color?: string;
+  sender_avatar_url?: string;
   content: string;
   message_type: MessageType;
   reply_to_message_id?: string | null;
   reply_to?: MessageReplyInfo | null;
+  is_forwarded?: boolean;
+  forwarded_from?: string;
   created_at: string;
   updated_at?: string | null;
   deleted_at?: string | null;

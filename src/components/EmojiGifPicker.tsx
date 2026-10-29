@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Search, X, Smile, Film } from 'lucide-react';
 
 interface EmojiGifPickerProps {
@@ -12,7 +12,8 @@ const COMMON_EMOJIS = [
   '❤️', '👍', '🔥', '😂', '🎉', '💡', '✨', '🙌',
   '👏', '👀', '🤝', '💯', '🚀', '😍', '🙏', '⚡',
   '☕', '🍕', '🍻', '🎈', '😎', '🤔', '🥳', '😭',
-  '👋', '✌️', '💪', '🎯', '🥑', '🌮', '🍷', '🌿'
+  '👋', '✌️', '💪', '🎯', '🥑', '🌮', '🍷', '🌿',
+  '☀️', '🌙', '⭐', '🎈', '🎨', '📚', '💡', '🍿'
 ];
 
 const CURATED_GIFS = [
@@ -53,11 +54,17 @@ export const EmojiGifPicker: React.FC<EmojiGifPickerProps> = ({
   const [loading, setLoading] = useState(false);
   const [gifResults, setGifResults] = useState(CURATED_GIFS);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    if (isOpen) {
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
-  const filteredEmojis = query.trim()
-    ? COMMON_EMOJIS.filter(() => true) // All common emojis match or could be tagged
-    : COMMON_EMOJIS;
+  if (!isOpen) return null;
 
   const handleSearchGif = async (searchQuery: string) => {
     setQuery(searchQuery);
@@ -91,7 +98,6 @@ export const EmojiGifPicker: React.FC<EmojiGifPickerProps> = ({
         setLoading(false);
       }
     } else {
-      // Filter curated gifs by title
       const filtered = CURATED_GIFS.filter(g =>
         g.title.toLowerCase().includes(trimmed.toLowerCase())
       );
@@ -100,121 +106,130 @@ export const EmojiGifPicker: React.FC<EmojiGifPickerProps> = ({
   };
 
   return (
-    <div
-      role="dialog"
-      aria-label="Emoji and GIF picker"
-      className="absolute bottom-16 right-4 sm:right-6 z-40 w-80 bg-white border border-[#E5E5E5] shadow-lg flex flex-col"
-    >
-      {/* Tab bar */}
-      <div className="flex items-center justify-between border-b border-[#E5E5E5] px-3 py-2 bg-[#FAFAFA]">
-        <div className="flex items-center gap-1">
+    <>
+      {/* Mobile Backdrop */}
+      <div
+        className="sm:hidden fixed inset-0 z-40 bg-[#24212B]/40 backdrop-blur-xs"
+        onClick={onClose}
+      />
+
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Emoji and GIF picker"
+        className="fixed sm:absolute bottom-0 sm:bottom-16 left-0 sm:left-auto right-0 sm:right-6 z-50 sm:z-40 w-full sm:w-80 bg-white border border-[#EAE5E0] rounded-t-2xl sm:rounded-2xl shadow-[0_12px_40px_rgba(36,33,43,0.16)] flex flex-col overflow-hidden max-h-[75vh] sm:max-h-96 safe-area-bottom"
+      >
+        {/* Tab bar */}
+        <div className="flex items-center justify-between border-b border-[#EAE5E0] px-4 py-2.5 bg-[#FAF8F5]">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setTab('emoji')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                tab === 'emoji'
+                  ? 'bg-[#F0ECFF] text-[#6D28D9] shadow-2xs border border-[#DDD6FE]'
+                  : 'text-[#827D8B] hover:text-[#24212B]'
+              }`}
+            >
+              <Smile className="w-3.5 h-3.5" />
+              <span>Emoji</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('gif')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                tab === 'gif'
+                  ? 'bg-[#F0ECFF] text-[#6D28D9] shadow-2xs border border-[#DDD6FE]'
+                  : 'text-[#827D8B] hover:text-[#24212B]'
+              }`}
+            >
+              <Film className="w-3.5 h-3.5" />
+              <span>GIFs</span>
+            </button>
+          </div>
+
           <button
             type="button"
-            onClick={() => setTab('emoji')}
-            className={`px-2.5 py-1 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
-              tab === 'emoji'
-                ? 'bg-white border border-[#E5E5E5] text-[#171717]'
-                : 'text-[#737373] hover:text-[#171717]'
-            }`}
+            onClick={onClose}
+            aria-label="Close picker"
+            className="p-1.5 text-[#827D8B] hover:text-[#24212B] hover:bg-[#F4F0EA] rounded-md transition-colors cursor-pointer"
           >
-            <Smile className="w-3.5 h-3.5" />
-            <span>Emoji</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('gif')}
-            className={`px-2.5 py-1 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
-              tab === 'gif'
-                ? 'bg-white border border-[#E5E5E5] text-[#171717]'
-                : 'text-[#737373] hover:text-[#171717]'
-            }`}
-          >
-            <Film className="w-3.5 h-3.5" />
-            <span>GIFs</span>
+            <X className="w-4 h-4" />
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close picker"
-          className="p-1 text-[#737373] hover:text-[#171717] transition-colors cursor-pointer"
-        >
-          <X className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* Search Input for GIFs */}
-      {tab === 'gif' && (
-        <div className="p-2 border-b border-[#E5E5E5]">
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-[#737373]" />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => handleSearchGif(e.target.value)}
-              placeholder="Search GIFs..."
-              className="w-full h-8 pl-8 pr-3 text-xs bg-[#FAFAFA] border border-[#E5E5E5] text-[#171717] placeholder-[#A3A3A3] focus:outline-none focus:border-[#171717]"
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Content Area */}
-      <div className="p-3 max-h-60 overflow-y-auto">
-        {tab === 'emoji' ? (
-          <div className="grid grid-cols-8 gap-1.5">
-            {filteredEmojis.map((emoji) => (
-              <button
-                key={emoji}
-                type="button"
-                onClick={() => {
-                  onSelectEmoji(emoji);
-                  onClose();
-                }}
-                className="w-8 h-8 flex items-center justify-center text-lg hover:bg-[#F5F5F5] transition-colors cursor-pointer"
-              >
-                {emoji}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-2">
-            {loading ? (
-              <div className="col-span-2 py-8 text-center text-xs text-[#737373]">
-                Searching GIFs...
-              </div>
-            ) : gifResults.length > 0 ? (
-              gifResults.map((gif, idx) => (
-                <button
-                  key={`${gif.url}-${idx}`}
-                  type="button"
-                  onClick={() => {
-                    onSelectGif(gif.url, gif.title);
-                    onClose();
-                  }}
-                  className="group relative overflow-hidden bg-[#FAFAFA] border border-[#E5E5E5] hover:border-[#171717] transition-colors cursor-pointer"
-                >
-                  <img
-                    src={gif.url}
-                    alt={gif.title}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-24 object-cover"
-                    loading="lazy"
-                  />
-                  <div className="absolute inset-x-0 bottom-0 bg-black/60 p-1 text-[10px] text-white truncate text-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    {gif.title}
-                  </div>
-                </button>
-              ))
-            ) : (
-              <div className="col-span-2 py-8 text-center text-xs text-[#737373]">
-                No GIFs found
-              </div>
-            )}
+        {/* Search Input for GIFs */}
+        {tab === 'gif' && (
+          <div className="p-3 border-b border-[#EAE5E0] bg-[#FAF8F5]/50">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-[#827D8B]" />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => handleSearchGif(e.target.value)}
+                placeholder="Search GIFs..."
+                className="w-full h-8 pl-8 pr-3 text-xs bg-white border border-[#EAE5E0] rounded-lg text-[#24212B] placeholder-[#A39E98] focus:outline-none focus:border-[#8B7CF6]"
+              />
+            </div>
           </div>
         )}
+
+        {/* Content Area */}
+        <div className="p-3.5 overflow-y-auto max-h-60 sm:max-h-64">
+          {tab === 'emoji' ? (
+            <div className="grid grid-cols-7 sm:grid-cols-8 gap-2">
+              {COMMON_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => {
+                    onSelectEmoji(emoji);
+                    onClose();
+                  }}
+                  className="w-9 h-9 sm:w-8 sm:h-8 flex items-center justify-center text-xl sm:text-lg hover:bg-[#F0ECFF] rounded-lg transition-transform active:scale-115 cursor-pointer"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              {loading ? (
+                <div className="col-span-2 py-8 text-center text-xs text-[#827D8B]">
+                  Searching GIFs...
+                </div>
+              ) : gifResults.length > 0 ? (
+                gifResults.map((gif, idx) => (
+                  <button
+                    key={`${gif.url}-${idx}`}
+                    type="button"
+                    onClick={() => {
+                      onSelectGif(gif.url, gif.title);
+                      onClose();
+                    }}
+                    className="group relative overflow-hidden bg-[#FAF8F5] border border-[#EAE5E0] hover:border-[#8B7CF6] rounded-xl transition-all cursor-pointer shadow-2xs"
+                  >
+                    <img
+                      src={gif.url}
+                      alt={gif.title}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-24 sm:h-28 object-cover"
+                      loading="lazy"
+                    />
+                    <div className="absolute inset-x-0 bottom-0 bg-black/60 p-1 text-[10px] text-white truncate text-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      {gif.title}
+                    </div>
+                  </button>
+                ))
+              ) : (
+                <div className="col-span-2 py-8 text-center text-xs text-[#827D8B]">
+                  No GIFs found
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 };

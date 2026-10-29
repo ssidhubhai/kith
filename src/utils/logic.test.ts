@@ -113,3 +113,10 @@ test('conversationUtils - filters messages by text query and attachments', () =>
   const res3 = filterMessagesByQuery(messages, 'nomatch');
   assert.equal(res3.length, 0);
 });
+
+test('messageGrouping - formats date divider labels correctly', () => {
+  const todayIso = new Date().toISOString();
+  const label = formatDateDivider(todayIso);
+  assert.equal(label, 'Today');
+});
+

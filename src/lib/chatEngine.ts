@@ -6,7 +6,7 @@ import {
   Reaction,
   TypingIndicator
 } from '../types';
-import { getSupabase, isSupabaseConfigured } from './supabaseClient';
+import { getSupabase } from './supabaseClient';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { sanitizeFilename, validateFileSize } from '../utils/fileValidation';
 import { getDirectConversationKey } from '../utils/conversationUtils';
@@ -19,12 +19,29 @@ const LOCAL_CONVERSATIONS_KEY = 'kith_local_conversations';
 const LOCAL_REACTIONS_KEY = 'kith_local_reactions';
 const LOCAL_READ_STATES_KEY = 'kith_local_read_states';
 
-export const DEFAULT_FRIENDS: Omit<Member, 'last_seen_at' | 'created_at'>[] = [
-  { id: '11111111-1111-1111-1111-111111111111', display_name: 'Alex Chen', avatar_color: '#171717' },
-  { id: '22222222-2222-2222-2222-222222222222', display_name: 'Elena Rostova', avatar_color: '#404040' },
-  { id: '33333333-3333-3333-3333-333333333333', display_name: 'Jordan Miller', avatar_color: '#525252' },
-  { id: '44444444-4444-4444-4444-444444444444', display_name: 'Sam Taylor', avatar_color: '#262626' }
-];
+// Self-clean any legacy dummy seeds from browser storage
+if (typeof window !== 'undefined') {
+  try {
+    const rawMsgs = localStorage.getItem(LOCAL_MESSAGES_KEY);
+    if (rawMsgs && (rawMsgs.includes('seed-msg-') || rawMsgs.includes('The Collective'))) {
+      const parsed = JSON.parse(rawMsgs);
+      if (Array.isArray(parsed)) {
+        const cleaned = parsed.filter(m => !m.id?.startsWith('seed-'));
+        localStorage.setItem(LOCAL_MESSAGES_KEY, JSON.stringify(cleaned));
+      }
+    }
+    const rawMembers = localStorage.getItem(LOCAL_MEMBERS_KEY);
+    if (rawMembers && rawMembers.includes('11111111-1111-1111-1111-111111111111')) {
+      const parsed = JSON.parse(rawMembers);
+      if (Array.isArray(parsed)) {
+        const cleaned = parsed.filter(m => !m.id?.startsWith('11111111-') && !m.id?.startsWith('22222222-') && !m.id?.startsWith('33333333-') && !m.id?.startsWith('44444444-'));
+        localStorage.setItem(LOCAL_MEMBERS_KEY, JSON.stringify(cleaned));
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
 
 // Multi-tab broadcast channel
 const broadcastChannel = typeof window !== 'undefined' && 'BroadcastChannel' in window
@@ -36,6 +53,7 @@ type MessageCallback = (message: Message, action: 'insert' | 'update' | 'delete'
 type ReactionCallback = (reaction: Reaction, action: 'insert' | 'delete') => void;
 type TypingCallback = (typing: TypingIndicator) => void;
 type PresenceCallback = (memberId: string, isOnline: boolean) => void;
+type ConnectionCallback = (state: 'connected' | 'reconnecting' | 'offline') => void;
 
 interface ConversationListeners {
   messageCallbacks: Set<MessageCallback>;
@@ -45,13 +63,21 @@ interface ConversationListeners {
 
 const listeners = new Map<string, ConversationListeners>();
 const presenceListeners = new Set<PresenceCallback>();
-
-// Track online members
+const connectionListeners = new Set<ConnectionCallback>();
 const onlineMemberSet = new Set<string>();
+let currentConnectionState: 'connected' | 'reconnecting' | 'offline' = 'connected';
 
-/**
- * Helper to dispatch broadcast events across tabs
- */
+function notifyConnectionState(state: 'connected' | 'reconnecting' | 'offline') {
+  currentConnectionState = state;
+  connectionListeners.forEach(cb => cb(state));
+}
+
+// Window network listeners
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => notifyConnectionState('connected'));
+  window.addEventListener('offline', () => notifyConnectionState('offline'));
+}
+
 function broadcast(type: string, payload: unknown) {
   if (broadcastChannel) {
     try {
@@ -102,7 +128,23 @@ if (broadcastChannel) {
 
 export class ChatEngine {
   /**
-   * Loads current user identity from localStorage.
+   * Clears all local application and chat data to start 100% fresh
+   */
+  static clearAllData(): void {
+    try {
+      localStorage.removeItem(CURRENT_MEMBER_STORAGE_KEY);
+      localStorage.removeItem(LOCAL_MESSAGES_KEY);
+      localStorage.removeItem(LOCAL_MEMBERS_KEY);
+      localStorage.removeItem(LOCAL_CONVERSATIONS_KEY);
+      localStorage.removeItem(LOCAL_REACTIONS_KEY);
+      localStorage.removeItem(LOCAL_READ_STATES_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Loads current user identity from localStorage
    */
   static getCurrentMember(): Member | null {
     try {
@@ -117,7 +159,7 @@ export class ChatEngine {
   }
 
   /**
-   * Sets or updates current user identity.
+   * Sets or updates current user identity
    */
   static async setCurrentMember(displayName: string, existingId?: string): Promise<Member> {
     const trimmed = displayName.trim();
@@ -141,7 +183,7 @@ export class ChatEngine {
 
     localStorage.setItem(CURRENT_MEMBER_STORAGE_KEY, JSON.stringify(member));
 
-    // Also persist into members list
+    // Persist into members list & Supabase
     await this.upsertMemberRecord(member);
 
     // Broadcast presence
@@ -149,6 +191,27 @@ export class ChatEngine {
     onlineMemberSet.add(member.id);
 
     return member;
+  }
+
+  /**
+   * Updates current user's profile and broadcasts to peers
+   */
+  static async updateCurrentMemberProfile(updates: Partial<Member>): Promise<Member> {
+    const current = this.getCurrentMember();
+    if (!current) throw new Error('Not logged in');
+
+    const updated: Member = {
+      ...current,
+      ...updates,
+      id: current.id,
+      display_name: updates.display_name?.trim() || current.display_name
+    };
+
+    localStorage.setItem(CURRENT_MEMBER_STORAGE_KEY, JSON.stringify(updated));
+    await this.upsertMemberRecord(updated);
+
+    broadcast('member_profile_updated', updated);
+    return updated;
   }
 
   /**
@@ -161,9 +224,26 @@ export class ChatEngine {
         await supabase.from('members').upsert({
           id: member.id,
           display_name: member.display_name,
+          nickname: member.nickname || null,
+          avatar_url: member.avatar_url || null,
           avatar_color: member.avatar_color,
+          status_text: member.status_text || null,
+          hide_last_seen: Boolean(member.hide_last_seen),
           last_seen_at: new Date().toISOString()
         });
+
+        // Ensure default group conversation exists in Supabase
+        await supabase.from('conversations').upsert({
+          id: DEFAULT_GROUP_ID,
+          type: 'group',
+          title: 'The Collective'
+        }, { onConflict: 'id' });
+
+        // Join default conversation
+        await supabase.from('conversation_members').upsert({
+          conversation_id: DEFAULT_GROUP_ID,
+          member_id: member.id
+        }, { onConflict: 'conversation_id,member_id' });
       } catch (err) {
         console.warn('Supabase member upsert error, falling back to local:', err);
       }
@@ -194,7 +274,7 @@ export class ChatEngine {
           .select('*')
           .order('display_name', { ascending: true });
 
-        if (!error && data && data.length > 0) {
+        if (!error && data) {
           return data.map(m => ({
             ...m,
             is_online: m.id === current?.id || onlineMemberSet.has(m.id)
@@ -221,23 +301,14 @@ export class ChatEngine {
       const raw = localStorage.getItem(LOCAL_MEMBERS_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
+        if (Array.isArray(parsed)) {
           return parsed;
         }
       }
     } catch {
       // ignore
     }
-
-    // Default seed members
-    const now = new Date().toISOString();
-    const seeds: Member[] = DEFAULT_FRIENDS.map(f => ({
-      ...f,
-      last_seen_at: now,
-      created_at: now
-    }));
-    localStorage.setItem(LOCAL_MEMBERS_KEY, JSON.stringify(seeds));
-    return seeds;
+    return [];
   }
 
   /**
@@ -285,6 +356,22 @@ export class ChatEngine {
           if (list.length > 0) {
             return list;
           }
+
+          // If no conversations exist in Supabase yet, create default group
+          await supabase.from('conversations').insert({
+            id: DEFAULT_GROUP_ID,
+            type: 'group',
+            title: 'The Collective'
+          });
+          return [{
+            id: DEFAULT_GROUP_ID,
+            type: 'group',
+            title: 'The Collective',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            participant_ids: [memberId],
+            unread_count: 0
+          }];
         }
       } catch (err) {
         console.warn('Supabase getConversations error:', err);
@@ -304,7 +391,6 @@ export class ChatEngine {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          // Update last_message and unread counts
           const messages = this.getLocalMessages();
           const readStates = this.getReadStates();
 
@@ -328,91 +414,19 @@ export class ChatEngine {
       // ignore
     }
 
-    // Initialize default Group conversation
+    // Default Group conversation without any dummy messages
     const defaultGroup: Conversation = {
       id: DEFAULT_GROUP_ID,
       type: 'group',
       title: 'The Collective',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      participant_ids: DEFAULT_FRIENDS.map(f => f.id),
+      participant_ids: memberId ? [memberId] : [],
       unread_count: 0
     };
 
     localStorage.setItem(LOCAL_CONVERSATIONS_KEY, JSON.stringify([defaultGroup]));
-
-    // Seed welcoming messages if none exist
-    this.seedInitialMessages();
-
     return [defaultGroup];
-  }
-
-  /**
-   * Seeds natural initial messages in The Collective so the chat looks lived-in and beautiful
-   */
-  private static seedInitialMessages(): void {
-    const raw = localStorage.getItem(LOCAL_MESSAGES_KEY);
-    if (!raw) {
-      const now = Date.now();
-      const seedMsgs: Message[] = [
-        {
-          id: 'seed-msg-1',
-          conversation_id: DEFAULT_GROUP_ID,
-          sender_id: DEFAULT_FRIENDS[0].id,
-          sender_name: DEFAULT_FRIENDS[0].display_name,
-          content: 'Hey everyone — welcome to Kith! Clean typography, no Discord bloat, and fast as light.',
-          message_type: 'text',
-          created_at: new Date(now - 3600000 * 2).toISOString(),
-          status: 'sent',
-          reactions: [
-            {
-              id: 'r-1',
-              message_id: 'seed-msg-1',
-              member_id: DEFAULT_FRIENDS[1].id,
-              emoji: '🔥',
-              created_at: new Date(now - 3600000 * 1.9).toISOString()
-            },
-            {
-              id: 'r-2',
-              message_id: 'seed-msg-1',
-              member_id: DEFAULT_FRIENDS[2].id,
-              emoji: '❤️',
-              created_at: new Date(now - 3600000 * 1.8).toISOString()
-            }
-          ]
-        },
-        {
-          id: 'seed-msg-2',
-          conversation_id: DEFAULT_GROUP_ID,
-          sender_id: DEFAULT_FRIENDS[1].id,
-          sender_name: DEFAULT_FRIENDS[1].display_name,
-          content: 'Obsessed with how quiet and minimal this looks. Drag-and-drop file sharing works seamlessly too.',
-          message_type: 'text',
-          created_at: new Date(now - 3600000 * 1.5).toISOString(),
-          status: 'sent'
-        },
-        {
-          id: 'seed-msg-3',
-          conversation_id: DEFAULT_GROUP_ID,
-          sender_id: DEFAULT_FRIENDS[2].id,
-          sender_name: DEFAULT_FRIENDS[2].display_name,
-          content: 'Feel free to start 1-on-1 direct chats or drop whatever designs and notes you have in here!',
-          message_type: 'text',
-          created_at: new Date(now - 3600000 * 0.8).toISOString(),
-          status: 'sent',
-          reactions: [
-            {
-              id: 'r-3',
-              message_id: 'seed-msg-3',
-              member_id: DEFAULT_FRIENDS[0].id,
-              emoji: '👍',
-              created_at: new Date(now - 3600000 * 0.7).toISOString()
-            }
-          ]
-        }
-      ];
-      localStorage.setItem(LOCAL_MESSAGES_KEY, JSON.stringify(seedMsgs));
-    }
   }
 
   /**
@@ -427,14 +441,12 @@ export class ChatEngine {
 
     if (supabase) {
       try {
-        // Look for existing direct conversation between these two
         const { data: convMembers } = await supabase
           .from('conversation_members')
           .select('conversation_id, member_id')
           .in('member_id', [current.id, targetMember.id]);
 
         if (convMembers && convMembers.length > 0) {
-          // Group by conversation_id
           const counts: Record<string, number> = {};
           convMembers.forEach(cm => {
             counts[cm.conversation_id] = (counts[cm.conversation_id] || 0) + 1;
@@ -517,7 +529,7 @@ export class ChatEngine {
   }
 
   /**
-   * Retrieves messages for a conversation, with optional pagination (before ISO string)
+   * Retrieves messages for a conversation
    */
   static async getMessages(
     conversationId: string,
@@ -532,7 +544,7 @@ export class ChatEngine {
           .from('messages')
           .select(`
             *,
-            sender:sender_id (display_name, avatar_color),
+            sender:sender_id (display_name, avatar_color, avatar_url, nickname, status_text),
             attachments (*),
             reactions:message_reactions (*)
           `)
@@ -553,7 +565,10 @@ export class ChatEngine {
             conversation_id: m.conversation_id,
             sender_id: m.sender_id,
             sender_name: m.sender?.display_name || 'Friend',
-            sender_avatar_color: m.sender?.avatar_color || '#171717',
+            sender_avatar_color: m.sender?.avatar_color || '#8B7CF6',
+            sender_avatar_url: m.sender?.avatar_url,
+            is_forwarded: m.is_forwarded,
+            forwarded_from: m.forwarded_from,
             content: m.content,
             message_type: m.message_type,
             reply_to_message_id: m.reply_to_message_id,
@@ -565,7 +580,6 @@ export class ChatEngine {
             status: 'sent'
           }));
 
-          // Reverse so chronological order (oldest to newest)
           return { messages: mapped.reverse(), hasMore };
         }
       } catch (err) {
@@ -588,9 +602,6 @@ export class ChatEngine {
     return { messages: page, hasMore };
   }
 
-  /**
-   * Internal helper to get local messages
-   */
   private static getLocalMessages(): Message[] {
     try {
       const raw = localStorage.getItem(LOCAL_MESSAGES_KEY);
@@ -604,13 +615,14 @@ export class ChatEngine {
   }
 
   /**
-   * Sends a message with optimistic updates
+   * Sends a message with optional reply, attachments, and forwarding attribution
    */
   static async sendMessage(
     conversationId: string,
     content: string,
     replyToId?: string | null,
-    attachments?: Attachment[]
+    attachments?: Attachment[],
+    metadata?: { is_forwarded?: boolean; forwarded_from?: string }
   ): Promise<Message> {
     const current = this.getCurrentMember();
     if (!current) throw new Error('Not logged in');
@@ -620,11 +632,9 @@ export class ChatEngine {
       throw new Error('Message cannot be empty');
     }
 
-    // Build optimistic message
     const msgId = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    // If replyToId is present, retrieve the original message snippet
     let replySnippet = null;
     if (replyToId) {
       const localMsgs = this.getLocalMessages();
@@ -644,10 +654,13 @@ export class ChatEngine {
       sender_id: current.id,
       sender_name: current.display_name,
       sender_avatar_color: current.avatar_color,
+      sender_avatar_url: current.avatar_url,
       content: trimmed,
       message_type: attachments && attachments.length > 0 ? 'file' : 'text',
       reply_to_message_id: replyToId || null,
       reply_to: replySnippet,
+      is_forwarded: metadata?.is_forwarded || false,
+      forwarded_from: metadata?.forwarded_from || undefined,
       created_at: now,
       attachments: attachments || [],
       reactions: [],
@@ -659,10 +672,7 @@ export class ChatEngine {
     local.push(optimisticMessage);
     localStorage.setItem(LOCAL_MESSAGES_KEY, JSON.stringify(local));
 
-    // Update conversation timestamp
     this.touchConversation(conversationId);
-
-    // Notify listeners & broadcast across tabs
     this.notifyMessageAction(optimisticMessage, 'insert');
     broadcast('message_insert', optimisticMessage);
 
@@ -676,13 +686,14 @@ export class ChatEngine {
           sender_id: current.id,
           content: trimmed,
           message_type: optimisticMessage.message_type,
-          reply_to_message_id: replyToId || null
+          reply_to_message_id: replyToId || null,
+          is_forwarded: metadata?.is_forwarded || false,
+          forwarded_from: metadata?.forwarded_from || null
         });
 
         if (error) {
           console.error('Supabase message insert failed:', error);
         } else if (attachments && attachments.length > 0) {
-          // Insert attachment records
           const records = attachments.map(att => ({
             id: att.id,
             message_id: msgId,
@@ -704,8 +715,24 @@ export class ChatEngine {
   }
 
   /**
-   * Edits message content
+   * Forwards a message to another conversation preserving attribution
    */
+  static async forwardMessage(
+    sourceMessage: Message,
+    targetConversationId: string
+  ): Promise<Message> {
+    return this.sendMessage(
+      targetConversationId,
+      sourceMessage.content,
+      null,
+      sourceMessage.attachments,
+      {
+        is_forwarded: true,
+        forwarded_from: sourceMessage.sender_name || 'Friend'
+      }
+    );
+  }
+
   static async editMessage(messageId: string, newContent: string): Promise<void> {
     const trimmed = newContent.trim();
     if (!trimmed) throw new Error('Message cannot be empty');
@@ -734,9 +761,6 @@ export class ChatEngine {
     }
   }
 
-  /**
-   * Deletes a message (soft delete)
-   */
   static async deleteMessage(messageId: string): Promise<void> {
     const now = new Date().toISOString();
     const local = this.getLocalMessages();
@@ -766,9 +790,6 @@ export class ChatEngine {
     }
   }
 
-  /**
-   * Adds or toggles a reaction on a message
-   */
   static async toggleReaction(
     conversationId: string,
     messageId: string,
@@ -790,7 +811,6 @@ export class ChatEngine {
     const supabase = getSupabase();
 
     if (existingIdx >= 0) {
-      // Remove reaction
       const removed = msg.reactions.splice(existingIdx, 1)[0];
       localStorage.setItem(LOCAL_MESSAGES_KEY, JSON.stringify(local));
       this.notifyReactionAction(conversationId, removed, 'delete');
@@ -807,7 +827,6 @@ export class ChatEngine {
         }
       }
     } else {
-      // Add reaction
       const reaction: Reaction = {
         id: crypto.randomUUID(),
         message_id: messageId,
@@ -835,9 +854,6 @@ export class ChatEngine {
     }
   }
 
-  /**
-   * Uploads file to Supabase Storage bucket `kith_attachments` or local blob store
-   */
   static async uploadFile(
     file: File,
     conversationId: string,
@@ -846,7 +862,6 @@ export class ChatEngine {
     const current = this.getCurrentMember();
     if (!current) throw new Error('Not logged in');
 
-    // Validation
     const validation = validateFileSize(file.size);
     if (!validation.valid) {
       throw new Error(validation.error);
@@ -854,7 +869,6 @@ export class ChatEngine {
 
     const safeName = sanitizeFilename(file.name);
     const fileId = crypto.randomUUID();
-    const ext = safeName.includes('.') ? safeName.substring(safeName.lastIndexOf('.')) : '';
     const storagePath = `${conversationId}/${fileId}_${safeName}`;
 
     onProgress?.(30);
@@ -915,9 +929,6 @@ export class ChatEngine {
     };
   }
 
-  /**
-   * Broadcasts typing status
-   */
   static sendTyping(conversationId: string): void {
     const current = this.getCurrentMember();
     if (!current) return;
@@ -946,9 +957,6 @@ export class ChatEngine {
     }
   }
 
-  /**
-   * Marks conversation as read
-   */
   static markAsRead(conversationId: string): void {
     const states = this.getReadStates();
     states[conversationId] = Date.now();
@@ -974,9 +982,6 @@ export class ChatEngine {
     }
   }
 
-  /**
-   * Subscribes to conversation changes (messages, reactions, typing)
-   */
   static subscribeToConversation(
     conversationId: string,
     callbacks: {
@@ -998,7 +1003,6 @@ export class ChatEngine {
     convListeners.reactionCallbacks.add(callbacks.onReaction);
     convListeners.typingCallbacks.add(callbacks.onTyping);
 
-    // Supabase Realtime channel subscription if configured
     const activeClient = getSupabase();
     let supabaseChannel: RealtimeChannel | null = null;
 
@@ -1017,10 +1021,9 @@ export class ChatEngine {
             async (payload) => {
               if (payload.eventType === 'INSERT') {
                 const newRow = payload.new as any;
-                // Fetch sender details
                 const { data: sender } = await activeClient
                   .from('members')
-                  .select('display_name, avatar_color')
+                  .select('display_name, avatar_color, avatar_url, nickname, status_text')
                   .eq('id', newRow.sender_id)
                   .maybeSingle();
 
@@ -1029,7 +1032,10 @@ export class ChatEngine {
                   conversation_id: newRow.conversation_id,
                   sender_id: newRow.sender_id,
                   sender_name: sender?.display_name || 'Friend',
-                  sender_avatar_color: sender?.avatar_color || '#171717',
+                  sender_avatar_color: sender?.avatar_color || '#8B7CF6',
+                  sender_avatar_url: sender?.avatar_url,
+                  is_forwarded: newRow.is_forwarded,
+                  forwarded_from: newRow.forwarded_from,
                   content: newRow.content,
                   message_type: newRow.message_type,
                   reply_to_message_id: newRow.reply_to_message_id,
@@ -1066,13 +1072,18 @@ export class ChatEngine {
               callbacks.onTyping(payload as TypingIndicator);
             }
           })
-          .subscribe();
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              notifyConnectionState('connected');
+            } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+              notifyConnectionState('reconnecting');
+            }
+          });
       } catch (err) {
         console.warn('Supabase realtime subscription failed:', err);
       }
     }
 
-    // Cleanup function
     return () => {
       convListeners.messageCallbacks.delete(callbacks.onMessage);
       convListeners.reactionCallbacks.delete(callbacks.onReaction);
@@ -1092,9 +1103,23 @@ export class ChatEngine {
     };
   }
 
-  /**
-   * Subscribes to global presence updates
-   */
+  static getLastReadTime(conversationId: string): number {
+    const states = this.getReadStates();
+    return states[conversationId] || 0;
+  }
+
+  static subscribeToConnectionState(callback: ConnectionCallback): () => void {
+    connectionListeners.add(callback);
+    callback(currentConnectionState);
+    return () => {
+      connectionListeners.delete(callback);
+    };
+  }
+
+  static getConnectionState(): 'connected' | 'reconnecting' | 'offline' {
+    return currentConnectionState;
+  }
+
   static subscribeToPresence(callback: PresenceCallback): () => void {
     presenceListeners.add(callback);
     return () => {
