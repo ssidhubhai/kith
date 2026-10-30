@@ -15,6 +15,7 @@ import { SupabaseSetupModal } from './components/SupabaseSetupModal';
 import { AccountSettingsModal } from './components/AccountSettingsModal';
 import { FriendProfileCard } from './components/FriendProfileCard';
 import { ForwardModal } from './components/ForwardModal';
+import { OfflineIndicator } from './components/OfflineIndicator';
 
 
 export default function App() {
@@ -577,6 +578,9 @@ export default function App() {
         conversations={conversations}
         onForward={handleForwardMessage}
       />
+
+      {/* Offline connectivity indicator banner */}
+      <OfflineIndicator />
     </div>
   );
 }

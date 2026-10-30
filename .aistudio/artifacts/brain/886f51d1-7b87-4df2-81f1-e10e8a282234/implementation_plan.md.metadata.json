@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for unifying sidebar contacts into a single list, opening direct chat immediately upon contact tap, and adding a compact backend status & PWA download indicator with a custom installation modal.",
+  "updatedAt":  "2026-10-30T13:30:48.993417059Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

@@ -20,6 +20,7 @@ import { formatDateDivider, groupMessages } from '../utils/messageGrouping';
 import { filterMessagesByQuery } from '../utils/conversationUtils';
 import { useVisualViewport } from '../hooks/useVisualViewport';
 import { getMemberAvatarPalette } from '../utils/avatarUtils';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface ChatAreaProps {
   conversation: Conversation;
@@ -282,7 +283,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         </div>
 
         {/* Top Bar Actions */}
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
+          <PWAInstallButton variant="compact" />
+
           {showSearch ? (
             <div className="flex items-center gap-1.5 border border-[#8B7CF6] rounded-xl px-2.5 py-1 bg-white shadow-2xs">
               <Search className="w-3.5 h-3.5 text-[#827D8B]" />
