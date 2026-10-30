@@ -32,14 +32,51 @@ function notifyBackendInfo(info: BackendInfo) {
   backendInfoListeners.forEach(cb => cb(currentBackendInfo));
 }
 
+function cleanUrl(url: string): string {
+  let clean = url.trim().replace(/^["']|["']$/g, '');
+  if (clean.endsWith('/')) {
+    clean = clean.slice(0, -1);
+  }
+  return clean;
+}
+
+function cleanKey(key: string): string {
+  return key.trim().replace(/^["']|["']$/g, '');
+}
+
 /**
  * Returns current Supabase credentials.
  * Environment variables (build-time in Vercel/Vite) take top priority so all users
  * on a deployment share the exact same database without needing manual configuration.
  */
 export function getSupabaseConfig(): SupabaseConfig {
-  const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
-  const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+  const metaEnv = typeof import.meta !== 'undefined' ? (import.meta.env as Record<string, string | undefined> | undefined) : undefined;
+  const procEnv = typeof process !== 'undefined' ? (process.env as Record<string, string | undefined> | undefined) : undefined;
+
+  const rawUrl =
+    metaEnv?.VITE_SUPABASE_URL ||
+    metaEnv?.NEXT_PUBLIC_SUPABASE_URL ||
+    metaEnv?.SUPABASE_URL ||
+    procEnv?.VITE_SUPABASE_URL ||
+    procEnv?.NEXT_PUBLIC_SUPABASE_URL ||
+    procEnv?.SUPABASE_URL ||
+    '';
+
+  const rawKey =
+    metaEnv?.VITE_SUPABASE_ANON_KEY ||
+    metaEnv?.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    metaEnv?.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    metaEnv?.SUPABASE_ANON_KEY ||
+    metaEnv?.SUPABASE_PUBLISHABLE_KEY ||
+    procEnv?.VITE_SUPABASE_ANON_KEY ||
+    procEnv?.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    procEnv?.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    procEnv?.SUPABASE_ANON_KEY ||
+    procEnv?.SUPABASE_PUBLISHABLE_KEY ||
+    '';
+
+  const envUrl = cleanUrl(rawUrl);
+  const envKey = cleanKey(rawKey);
 
   if (envUrl && envKey) {
     return {
@@ -57,8 +94,8 @@ export function getSupabaseConfig(): SupabaseConfig {
         const parsed = JSON.parse(stored);
         if (parsed.url && parsed.anonKey) {
           return {
-            url: parsed.url.trim(),
-            anonKey: parsed.anonKey.trim(),
+            url: cleanUrl(parsed.url),
+            anonKey: cleanKey(parsed.anonKey),
             source: 'storage'
           };
         }
@@ -76,10 +113,26 @@ export function getSupabaseConfig(): SupabaseConfig {
 }
 
 /**
+ * Checks if Supabase credentials are syntactically present.
+ */
+export function isSupabaseConfigured(): boolean {
+  const config = getSupabaseConfig();
+  return Boolean(
+    config.url &&
+    config.url.startsWith('https://') &&
+    config.anonKey &&
+    config.anonKey.length > 20
+  );
+}
+
+/**
  * Checks if the user explicitly opted into local single-device demo mode.
+ * Crucial fix: If Supabase is configured via build-time env or saved config,
+ * local demo mode is NEVER active. Cloud backend ALWAYS takes precedence.
  */
 export function isLocalModeExplicitlyEnabled(): boolean {
   if (typeof window === 'undefined') return false;
+  if (isSupabaseConfigured()) return false;
   return localStorage.getItem(LOCAL_MODE_FLAG) === 'true';
 }
 
@@ -95,19 +148,6 @@ export function setExplicitLocalMode(enabled: boolean): void {
   } else {
     localStorage.removeItem(LOCAL_MODE_FLAG);
   }
-}
-
-/**
- * Checks if Supabase credentials are syntactically present.
- */
-export function isSupabaseConfigured(): boolean {
-  const config = getSupabaseConfig();
-  return Boolean(
-    config.url &&
-    config.url.startsWith('https://') &&
-    config.anonKey &&
-    config.anonKey.length > 20
-  );
 }
 
 export function isEnvConfigured(): boolean {
@@ -255,7 +295,8 @@ export async function verifySupabaseConnection(
 
   for (const table of requiredTables) {
     try {
-      const { error } = await testClient.from(table).select('id').limit(1);
+      const selectCol = table === 'conversation_members' ? 'conversation_id' : 'id';
+      const { error } = await testClient.from(table).select(selectCol).limit(1);
       if (error) {
         // Table missing error codes (42P01 in Postgres or message match)
         if (

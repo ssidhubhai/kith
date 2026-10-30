@@ -30,11 +30,13 @@ type TypingCallback = (typing: TypingIndicator) => void;
 type PresenceCallback = (memberId: string, isOnline: boolean) => void;
 type ConnectionCallback = (state: ConnectionState) => void;
 type MemberUpdateCallback = (members: Member[]) => void;
+type AttachmentCallback = (attachment: Attachment) => void;
 
 interface ConversationListeners {
   messageCallbacks: Set<MessageCallback>;
   reactionCallbacks: Set<ReactionCallback>;
   typingCallbacks: Set<TypingCallback>;
+  attachmentCallbacks: Set<AttachmentCallback>;
 }
 
 const listeners = new Map<string, ConversationListeners>();
@@ -56,6 +58,26 @@ function notifyConnectionState(state: ConnectionState) {
       console.error(e);
     }
   });
+}
+
+/**
+ * Resolves full public CDN download URL for Supabase Storage attachments.
+ * Prevents broken images on remote devices and across page refreshes.
+ */
+export function resolveAttachmentUrl(att: any, supabaseClientInstance?: any): string {
+  if (att?.download_url && (att.download_url.startsWith('http://') || att.download_url.startsWith('https://') || att.download_url.startsWith('blob:') || att.download_url.startsWith('data:'))) {
+    return att.download_url;
+  }
+  const client = supabaseClientInstance || getSupabase();
+  if (att?.storage_path && client) {
+    try {
+      const { data } = client.storage.from('kith_attachments').getPublicUrl(att.storage_path);
+      if (data?.publicUrl) return data.publicUrl;
+    } catch {
+      // fallback
+    }
+  }
+  return att?.download_url || att?.storage_path || '';
 }
 
 function broadcast(type: string, payload: unknown) {
@@ -126,8 +148,8 @@ export class ChatEngine {
     const supabase = getSupabase();
     const currentMember = this.getCurrentMember();
 
-    if (!supabase || isLocalModeExplicitlyEnabled()) {
-      notifyConnectionState(isSupabaseConfigured() ? 'connected' : 'local_only');
+    if (!supabase) {
+      notifyConnectionState(isSupabaseConfigured() ? 'connecting' : 'local_only');
       return;
     }
 
@@ -214,13 +236,19 @@ export class ChatEngine {
 
   /**
    * Reconnects and reconciles data after network interruption.
+   * Recovers presence and fresh messages from Supabase.
    */
-  static async reconcileState(): Promise<void> {
+  static async reconcileState(activeConversationId?: string): Promise<{ messages?: Message[] }> {
     this.initGlobalRealtime();
     const current = this.getCurrentMember();
     if (current) {
       await this.upsertMemberRecord(current);
     }
+    if (activeConversationId) {
+      const res = await this.getMessages(activeConversationId, { limit: 50 });
+      return { messages: res.messages };
+    }
+    return {};
   }
 
   static clearAllData(): void {
@@ -344,7 +372,52 @@ export class ChatEngine {
     } catch {}
   }
 
-  static async setCurrentMember(displayName: string, existingId?: string): Promise<Member> {
+  static async uploadAvatar(file: File): Promise<string> {
+    const current = this.getCurrentMember();
+    const validation = validateFileSize(file.size);
+    if (!validation.valid) {
+      throw new Error(validation.error);
+    }
+
+    const safeName = sanitizeFilename(file.name);
+    const fileId = crypto.randomUUID();
+    const storagePath = `avatars/${current?.id || 'anon'}_${fileId}_${safeName}`;
+    const supabase = getSupabase();
+
+    if (supabase && !isLocalModeExplicitlyEnabled()) {
+      try {
+        const { data, error } = await supabase.storage
+          .from('kith_attachments')
+          .upload(storagePath, file, {
+            cacheControl: '3600',
+            upsert: true
+          });
+
+        if (!error && data) {
+          const { data: urlData } = supabase.storage
+            .from('kith_attachments')
+            .getPublicUrl(storagePath);
+          return urlData.publicUrl;
+        }
+      } catch (err) {
+        console.warn('[Kith] Supabase avatar storage upload failed, using data URL fallback:', err);
+      }
+    }
+
+    // Local data URL fallback
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('Failed to read image file'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  static async setCurrentMember(
+    displayName: string,
+    existingId?: string,
+    initialProfile?: Partial<Member>
+  ): Promise<Member> {
     const trimmed = displayName.trim();
     if (!trimmed) {
       throw new Error('Display name cannot be empty');
@@ -353,18 +426,20 @@ export class ChatEngine {
     const current = this.getCurrentMember();
     const memberId = existingId || current?.id || crypto.randomUUID();
     const avatarColors = ['#8B7CF6', '#10B981', '#F59E0B', '#EC4899', '#3B82F6', '#6366F1'];
-    const avatarColor = current?.avatar_color || avatarColors[Math.floor(Math.random() * avatarColors.length)];
+    const avatarColor = initialProfile?.avatar_color || current?.avatar_color || avatarColors[Math.floor(Math.random() * avatarColors.length)];
 
     const member: Member = {
       id: memberId,
       display_name: trimmed,
-      username: current?.username,
-      email: current?.email,
-      auth_provider: current?.auth_provider || 'email',
+      username: initialProfile?.username || current?.username,
+      email: initialProfile?.email || current?.email,
+      auth_provider: initialProfile?.auth_provider || current?.auth_provider || 'email',
       avatar_color: avatarColor,
+      avatar_url: initialProfile?.avatar_url || current?.avatar_url,
       last_seen_at: new Date().toISOString(),
       created_at: current?.created_at || new Date().toISOString(),
-      is_online: true
+      is_online: true,
+      ...initialProfile
     };
 
     localStorage.setItem(CURRENT_MEMBER_STORAGE_KEY, JSON.stringify(member));
@@ -377,6 +452,27 @@ export class ChatEngine {
     this.initGlobalRealtime();
 
     return member;
+  }
+
+  static async deleteMember(memberId: string): Promise<void> {
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        await supabase.from('conversation_members').delete().eq('member_id', memberId);
+        await supabase.from('messages').delete().eq('sender_id', memberId);
+        await supabase.from('message_reactions').delete().eq('member_id', memberId);
+        await supabase.from('members').delete().eq('id', memberId);
+      } catch (err) {
+        console.warn('[Kith] Error deleting member in Supabase:', err);
+      }
+    }
+
+    const localMembers = this.getLocalMembers().filter(m => m.id !== memberId);
+    localStorage.setItem(LOCAL_MEMBERS_KEY, JSON.stringify(localMembers));
+
+    const updated = await this.getMembers();
+    memberUpdateListeners.forEach(cb => cb(updated));
+    broadcast('member_deleted', { memberId });
   }
 
   static async updateCurrentMemberProfile(updates: Partial<Member>): Promise<Member> {
@@ -403,9 +499,9 @@ export class ChatEngine {
    */
   private static async upsertMemberRecord(member: Member): Promise<void> {
     const supabase = getSupabase();
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
-        const { error: memberErr } = await supabase.from('members').upsert({
+        let { error: memberErr } = await supabase.from('members').upsert({
           id: member.id,
           display_name: member.display_name,
           username: member.username || null,
@@ -419,10 +515,21 @@ export class ChatEngine {
           last_seen_at: new Date().toISOString()
         }, { onConflict: 'id' });
 
+        // If schema cache indicates missing column (PGRST204 / 42703), fallback to base schema
+        if (memberErr && (memberErr.code === 'PGRST204' || memberErr.code === '42703' || memberErr.message?.toLowerCase().includes('column'))) {
+          console.warn('[Kith] Database members table lacks extended profile columns. Using base schema columns.');
+          const baseUpsert = await supabase.from('members').upsert({
+            id: member.id,
+            display_name: member.display_name,
+            avatar_color: member.avatar_color,
+            last_seen_at: new Date().toISOString()
+          }, { onConflict: 'id' });
+          memberErr = baseUpsert.error;
+        }
+
         if (memberErr) {
           console.error('[Kith] Error upserting member to Supabase:', memberErr);
         }
-
 
         // Ensure default shared group conversation exists
         await supabase.from('conversations').upsert({
@@ -456,7 +563,7 @@ export class ChatEngine {
     const current = this.getCurrentMember();
     const supabase = getSupabase();
 
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
         const { data, error } = await supabase
           .from('members')
@@ -502,7 +609,7 @@ export class ChatEngine {
   static async getConversations(memberId: string): Promise<Conversation[]> {
     const supabase = getSupabase();
 
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
         const { data: convs, error } = await supabase
           .from('conversations')
@@ -526,10 +633,25 @@ export class ChatEngine {
                 .limit(1)
                 .maybeSingle();
 
+              let displayTitle = c.title;
+              if (c.type === 'direct') {
+                const otherMemberId = memberIds.find((id: string) => id !== memberId);
+                if (otherMemberId) {
+                  const { data: otherMember } = await supabase
+                    .from('members')
+                    .select('display_name')
+                    .eq('id', otherMemberId)
+                    .maybeSingle();
+                  if (otherMember?.display_name) {
+                    displayTitle = otherMember.display_name;
+                  }
+                }
+              }
+
               list.push({
                 id: c.id,
                 type: c.type,
-                title: c.title,
+                title: displayTitle,
                 created_at: c.created_at,
                 updated_at: c.updated_at,
                 participant_ids: memberIds,
@@ -538,26 +660,37 @@ export class ChatEngine {
               });
             }
           }
-          if (list.length > 0) {
-            return list;
+
+          // Ensure default shared group 'The Collective' is always present for all users
+          const hasDefault = list.some(c => c.id === DEFAULT_GROUP_ID);
+          if (!hasDefault) {
+            try {
+              await supabase.from('conversations').upsert({
+                id: DEFAULT_GROUP_ID,
+                type: 'group',
+                title: 'The Collective'
+              }, { onConflict: 'id' });
+
+              await supabase.from('conversation_members').upsert({
+                conversation_id: DEFAULT_GROUP_ID,
+                member_id: memberId
+              }, { onConflict: 'conversation_id,member_id' });
+            } catch {
+              // ignore
+            }
+
+            list.unshift({
+              id: DEFAULT_GROUP_ID,
+              type: 'group',
+              title: 'The Collective',
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              participant_ids: [memberId],
+              unread_count: 0
+            });
           }
 
-          // Ensure default group if table was empty
-          await supabase.from('conversations').upsert({
-            id: DEFAULT_GROUP_ID,
-            type: 'group',
-            title: 'The Collective'
-          }, { onConflict: 'id' });
-
-          return [{
-            id: DEFAULT_GROUP_ID,
-            type: 'group',
-            title: 'The Collective',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            participant_ids: [memberId],
-            unread_count: 0
-          }];
+          return list;
         } else if (error) {
           console.error('[Kith] Supabase getConversations error:', error);
         }
@@ -619,33 +752,48 @@ export class ChatEngine {
     const pairKey = getDirectConversationKey(current.id, targetMember.id);
     const supabase = getSupabase();
 
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
+        // Query conversation memberships joined with conversations where type is 'direct'
         const { data: convMembers } = await supabase
           .from('conversation_members')
-          .select('conversation_id, member_id')
+          .select(`
+            conversation_id,
+            member_id,
+            conversations!inner (
+              id,
+              type,
+              title,
+              created_at,
+              updated_at
+            )
+          `)
           .in('member_id', [current.id, targetMember.id]);
 
         if (convMembers && convMembers.length > 0) {
-          const counts: Record<string, number> = {};
-          convMembers.forEach(cm => {
-            counts[cm.conversation_id] = (counts[cm.conversation_id] || 0) + 1;
-          });
-          const matchId = Object.keys(counts).find(id => counts[id] === 2);
-          if (matchId) {
-            const { data: conv } = await supabase
-              .from('conversations')
-              .select('*')
-              .eq('id', matchId)
-              .single();
-            if (conv) {
+          const directMap = new Map<string, { count: number; conv: any }>();
+          for (const item of convMembers as any[]) {
+            const c = item.conversations;
+            if (c && c.type === 'direct' && c.id !== DEFAULT_GROUP_ID) {
+              const existing = directMap.get(c.id);
+              if (existing) {
+                existing.count += 1;
+              } else {
+                directMap.set(c.id, { count: 1, conv: c });
+              }
+            }
+          }
+
+          for (const [, val] of directMap.entries()) {
+            if (val.count >= 2) {
               return {
-                id: conv.id,
+                id: val.conv.id,
                 type: 'direct',
                 title: targetMember.display_name,
-                created_at: conv.created_at,
-                updated_at: conv.updated_at,
-                participant_ids: [current.id, targetMember.id]
+                created_at: val.conv.created_at,
+                updated_at: val.conv.updated_at,
+                participant_ids: [current.id, targetMember.id],
+                unread_count: 0
               };
             }
           }
@@ -672,7 +820,8 @@ export class ChatEngine {
             title: targetMember.display_name,
             created_at: newConv.created_at,
             updated_at: newConv.updated_at,
-            participant_ids: [current.id, targetMember.id]
+            participant_ids: [current.id, targetMember.id],
+            unread_count: 0
           };
         }
       } catch (err) {
@@ -683,6 +832,7 @@ export class ChatEngine {
     const localConvs = this.getLocalConversations(current.id);
     const existing = localConvs.find(
       c => c.type === 'direct' &&
+        c.id !== DEFAULT_GROUP_ID &&
         c.participant_ids?.includes(current.id) &&
         c.participant_ids?.includes(targetMember.id)
     );
@@ -713,7 +863,7 @@ export class ChatEngine {
     const limit = options.limit || 50;
     const supabase = getSupabase();
 
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
         let query = supabase
           .from('messages')
@@ -727,11 +877,32 @@ export class ChatEngine {
           .order('created_at', { ascending: false })
           .limit(limit + 1);
 
-        if (options.before) {
-          query = query.lt('created_at', options.before);
+        let { data, error } = await query;
+
+        // If error is 42703 (undefined column in members join), fallback to base columns
+        if (error && (error.code === '42703' || error.message?.includes('avatar_url') || error.message?.includes('column'))) {
+          console.warn('[Kith] getMessages fallback: members table lacks avatar_url column. Querying base columns.');
+          let fallbackQuery = supabase
+            .from('messages')
+            .select(`
+              *,
+              sender:sender_id (display_name, avatar_color),
+              attachments (*),
+              reactions:message_reactions (*)
+            `)
+            .eq('conversation_id', conversationId)
+            .order('created_at', { ascending: false })
+            .limit(limit + 1);
+
+          if (options.before) {
+            fallbackQuery = fallbackQuery.lt('created_at', options.before);
+          }
+
+          const fallbackRes = await fallbackQuery;
+          data = fallbackRes.data;
+          error = fallbackRes.error;
         }
 
-        const { data, error } = await query;
         if (!error && data) {
           const hasMore = data.length > limit;
           const trimmed = hasMore ? data.slice(0, limit) : data;
@@ -750,7 +921,10 @@ export class ChatEngine {
             created_at: m.created_at,
             updated_at: m.updated_at,
             deleted_at: m.deleted_at,
-            attachments: m.attachments || [],
+            attachments: (m.attachments || []).map((att: any) => ({
+              ...att,
+              download_url: resolveAttachmentUrl(att, supabase)
+            })),
             reactions: m.reactions || [],
             status: 'sent'
           }));
@@ -758,9 +932,11 @@ export class ChatEngine {
           return { messages: mapped.reverse(), hasMore };
         } else if (error) {
           console.error('[Kith] Supabase getMessages error:', error);
+          notifyConnectionState('reconnecting');
         }
       } catch (err) {
         console.error('[Kith] Supabase getMessages exception:', err);
+        notifyConnectionState('reconnecting');
       }
     }
 
@@ -841,12 +1017,12 @@ export class ChatEngine {
     broadcast('message_insert', optimisticMessage);
 
     const supabase = getSupabase();
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
         // Ensure sender member record exists in Supabase
         await this.upsertMemberRecord(current);
 
-        const { error: insertErr } = await supabase.from('messages').insert({
+        let { error: insertErr } = await supabase.from('messages').insert({
           id: msgId,
           conversation_id: conversationId,
           sender_id: current.id,
@@ -856,6 +1032,19 @@ export class ChatEngine {
           is_forwarded: metadata?.is_forwarded || false,
           forwarded_from: metadata?.forwarded_from || null
         });
+
+        if (insertErr && (insertErr.code === 'PGRST204' || insertErr.code === '42703' || insertErr.message?.includes('forwarded') || insertErr.message?.includes('column'))) {
+          console.warn('[Kith] messages table lacks forwarded columns. Inserting base columns.');
+          const baseInsert = await supabase.from('messages').insert({
+            id: msgId,
+            conversation_id: conversationId,
+            sender_id: current.id,
+            content: trimmed,
+            message_type: optimisticMessage.message_type,
+            reply_to_message_id: replyToId || null
+          });
+          insertErr = baseInsert.error;
+        }
 
         if (insertErr) {
           console.error('[Kith] Supabase message insert failed:', insertErr);
@@ -882,6 +1071,12 @@ export class ChatEngine {
             console.error('[Kith] Supabase attachments insert error:', attErr);
           }
         }
+
+        // Update conversation timestamp in Supabase
+        await supabase
+          .from('conversations')
+          .update({ updated_at: now })
+          .eq('id', conversationId);
 
         // Confirmed delivered to cloud
         optimisticMessage.status = 'sent';
@@ -917,7 +1112,7 @@ export class ChatEngine {
 
   static async retryFailedMessage(message: Message): Promise<Message> {
     const supabase = getSupabase();
-    if (!supabase || isLocalModeExplicitlyEnabled()) {
+    if (!supabase) {
       return message;
     }
 
@@ -931,7 +1126,7 @@ export class ChatEngine {
 
     try {
       await this.upsertMemberRecord(current);
-      const { error } = await supabase.from('messages').insert({
+      let { error } = await supabase.from('messages').insert({
         id: message.id,
         conversation_id: message.conversation_id,
         sender_id: current.id,
@@ -941,6 +1136,18 @@ export class ChatEngine {
         is_forwarded: message.is_forwarded || false,
         forwarded_from: message.forwarded_from || null
       });
+
+      if (error && (error.code === 'PGRST204' || error.code === '42703' || error.message?.includes('forwarded') || error.message?.includes('column'))) {
+        const baseInsert = await supabase.from('messages').insert({
+          id: message.id,
+          conversation_id: message.conversation_id,
+          sender_id: current.id,
+          content: message.content,
+          message_type: message.message_type,
+          reply_to_message_id: message.reply_to_message_id || null
+        });
+        error = baseInsert.error;
+      }
 
       if (error) {
         message.status = 'failed';
@@ -995,7 +1202,7 @@ export class ChatEngine {
     }
 
     const supabase = getSupabase();
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
         await supabase
           .from('messages')
@@ -1021,7 +1228,7 @@ export class ChatEngine {
     }
 
     const supabase = getSupabase();
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
         await supabase
           .from('messages')
@@ -1120,7 +1327,7 @@ export class ChatEngine {
     onProgress?.(30);
 
     const supabase = getSupabase();
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
         const { data, error } = await supabase.storage
           .from('kith_attachments')
@@ -1131,7 +1338,12 @@ export class ChatEngine {
 
         onProgress?.(85);
 
-        if (!error && data) {
+        if (error) {
+          console.error('[Kith] Supabase storage upload returned error:', error);
+          throw new Error(`Cloud upload failed: ${error.message}`);
+        }
+
+        if (data) {
           const { data: urlData } = supabase.storage
             .from('kith_attachments')
             .getPublicUrl(storagePath);
@@ -1149,11 +1361,11 @@ export class ChatEngine {
             created_at: new Date().toISOString(),
             download_url: urlData.publicUrl
           };
-        } else {
-          console.warn('[Kith] Supabase storage upload returned error:', error);
         }
-      } catch (err) {
-        console.error('[Kith] Supabase upload exception:', err);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[Kith] Supabase upload exception:', msg);
+        throw new Error(`File upload failed: ${msg}`);
       }
     }
 
@@ -1188,7 +1400,7 @@ export class ChatEngine {
     broadcast('typing', payload);
 
     const supabase = getSupabase();
-    if (supabase && !isLocalModeExplicitlyEnabled()) {
+    if (supabase) {
       try {
         const channel = supabase.channel(`typing:${conversationId}`);
         channel.send({
@@ -1219,11 +1431,16 @@ export class ChatEngine {
   }
 
   private static touchConversation(conversationId: string): void {
+    const now = new Date().toISOString();
     const local = this.getLocalConversations('');
     const c = local.find(item => item.id === conversationId);
     if (c) {
-      c.updated_at = new Date().toISOString();
+      c.updated_at = now;
       localStorage.setItem(LOCAL_CONVERSATIONS_KEY, JSON.stringify(local));
+    }
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('conversations').update({ updated_at: now }).eq('id', conversationId).then(() => {}, () => {});
     }
   }
 
@@ -1237,13 +1454,15 @@ export class ChatEngine {
       onMessage: MessageCallback;
       onReaction: ReactionCallback;
       onTyping: TypingCallback;
+      onAttachmentInsert?: (attachment: Attachment) => void;
     }
   ): () => void {
     if (!listeners.has(conversationId)) {
       listeners.set(conversationId, {
         messageCallbacks: new Set(),
         reactionCallbacks: new Set(),
-        typingCallbacks: new Set()
+        typingCallbacks: new Set(),
+        attachmentCallbacks: new Set()
       });
     }
 
@@ -1251,11 +1470,14 @@ export class ChatEngine {
     convListeners.messageCallbacks.add(callbacks.onMessage);
     convListeners.reactionCallbacks.add(callbacks.onReaction);
     convListeners.typingCallbacks.add(callbacks.onTyping);
+    if (callbacks.onAttachmentInsert) {
+      convListeners.attachmentCallbacks.add(callbacks.onAttachmentInsert);
+    }
 
     const activeClient = getSupabase();
     let supabaseChannel: RealtimeChannel | null = null;
 
-    if (activeClient && !isLocalModeExplicitlyEnabled()) {
+    if (activeClient) {
       try {
         supabaseChannel = activeClient
           .channel(`room:${conversationId}`)
@@ -1270,12 +1492,25 @@ export class ChatEngine {
             async (payload) => {
               if (payload.eventType === 'INSERT') {
                 const newRow = payload.new as any;
-                const [{ data: sender }, { data: attachments }, { data: reactions }] = await Promise.all([
-                  activeClient
+                let senderData: any = null;
+                const { data: sData, error: sErr } = await activeClient
+                  .from('members')
+                  .select('display_name, avatar_color, avatar_url, nickname, status_text')
+                  .eq('id', newRow.sender_id)
+                  .maybeSingle();
+
+                if (sErr && (sErr.code === '42703' || sErr.message?.includes('column'))) {
+                  const { data: baseSData } = await activeClient
                     .from('members')
-                    .select('display_name, avatar_color, avatar_url, nickname, status_text')
+                    .select('display_name, avatar_color')
                     .eq('id', newRow.sender_id)
-                    .maybeSingle(),
+                    .maybeSingle();
+                  senderData = baseSData;
+                } else {
+                  senderData = sData;
+                }
+
+                const [{ data: attachments }, { data: reactions }] = await Promise.all([
                   activeClient
                     .from('attachments')
                     .select('*')
@@ -1286,13 +1521,18 @@ export class ChatEngine {
                     .eq('message_id', newRow.id)
                 ]);
 
+                const mappedAttachments = (attachments || []).map((att: any) => ({
+                  ...att,
+                  download_url: resolveAttachmentUrl(att, activeClient)
+                }));
+
                 const msg: Message = {
                   id: newRow.id,
                   conversation_id: newRow.conversation_id,
                   sender_id: newRow.sender_id,
-                  sender_name: sender?.display_name || 'Friend',
-                  sender_avatar_color: sender?.avatar_color || '#8B7CF6',
-                  sender_avatar_url: sender?.avatar_url,
+                  sender_name: senderData?.display_name || 'Friend',
+                  sender_avatar_color: senderData?.avatar_color || '#8B7CF6',
+                  sender_avatar_url: senderData?.avatar_url,
                   is_forwarded: newRow.is_forwarded,
                   forwarded_from: newRow.forwarded_from,
                   content: newRow.content,
@@ -1301,7 +1541,7 @@ export class ChatEngine {
                   created_at: newRow.created_at,
                   updated_at: newRow.updated_at,
                   deleted_at: newRow.deleted_at,
-                  attachments: attachments || [],
+                  attachments: mappedAttachments,
                   reactions: reactions || [],
                   status: 'sent'
                 };
@@ -1311,6 +1551,31 @@ export class ChatEngine {
               } else if (payload.eventType === 'DELETE') {
                 callbacks.onMessage(payload.old as Message, 'delete');
               }
+            }
+          )
+          .on(
+            'postgres_changes',
+            {
+              event: 'INSERT',
+              schema: 'public',
+              table: 'attachments',
+              filter: `conversation_id=eq.${conversationId}`
+            },
+            (payload) => {
+              const newAtt = payload.new as any;
+              const mapped: Attachment = {
+                id: newAtt.id,
+                message_id: newAtt.message_id,
+                conversation_id: newAtt.conversation_id,
+                uploader_id: newAtt.uploader_id,
+                original_filename: newAtt.original_filename,
+                storage_path: newAtt.storage_path,
+                mime_type: newAtt.mime_type,
+                file_size: newAtt.file_size,
+                created_at: newAtt.created_at,
+                download_url: resolveAttachmentUrl(newAtt, activeClient)
+              };
+              callbacks.onAttachmentInsert?.(mapped);
             }
           )
           .on(
@@ -1349,11 +1614,15 @@ export class ChatEngine {
       convListeners.messageCallbacks.delete(callbacks.onMessage);
       convListeners.reactionCallbacks.delete(callbacks.onReaction);
       convListeners.typingCallbacks.delete(callbacks.onTyping);
+      if (callbacks.onAttachmentInsert) {
+        convListeners.attachmentCallbacks.delete(callbacks.onAttachmentInsert);
+      }
 
       if (
         convListeners.messageCallbacks.size === 0 &&
         convListeners.reactionCallbacks.size === 0 &&
-        convListeners.typingCallbacks.size === 0
+        convListeners.typingCallbacks.size === 0 &&
+        convListeners.attachmentCallbacks.size === 0
       ) {
         listeners.delete(conversationId);
       }

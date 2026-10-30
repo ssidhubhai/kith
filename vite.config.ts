@@ -1,10 +1,41 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  // Load environment variables from cwd (Vercel builds provide process.env directly)
+  const env = loadEnv(mode, process.cwd(), '');
+
+  const supabaseUrl =
+    env.VITE_SUPABASE_URL ||
+    env.NEXT_PUBLIC_SUPABASE_URL ||
+    env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    '';
+
+  const supabaseAnonKey =
+    env.VITE_SUPABASE_ANON_KEY ||
+    env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    env.SUPABASE_ANON_KEY ||
+    env.SUPABASE_PUBLISHABLE_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    '';
+
   return {
+    // Expose NEXT_PUBLIC_ and SUPABASE_ prefixes to the browser bundle alongside VITE_
+    envPrefix: ['VITE_', 'NEXT_PUBLIC_', 'SUPABASE_'],
+    define: {
+      'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(supabaseUrl),
+      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(supabaseAnonKey),
+    },
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
@@ -20,3 +51,4 @@ export default defineConfig(() => {
     },
   };
 });
+

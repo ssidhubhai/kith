@@ -306,6 +306,9 @@ END $$;
 ALTER TABLE public.messages REPLICA IDENTITY FULL;
 ALTER TABLE public.message_reactions REPLICA IDENTITY FULL;
 ALTER TABLE public.members REPLICA IDENTITY FULL;
+ALTER TABLE public.conversations REPLICA IDENTITY FULL;
+ALTER TABLE public.conversation_members REPLICA IDENTITY FULL;
+ALTER TABLE public.attachments REPLICA IDENTITY FULL;
 
 -- ==============================================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES
@@ -394,6 +397,8 @@ CREATE POLICY "Users can remove their own reactions" ON public.message_reactions
 
 -- ==============================================================================
 -- STORAGE BUCKET CONFIGURATION & POLICIES
+-- Ensures attachments and avatars can be uploaded by anon & authenticated users
+-- and read publicly.
 -- ==============================================================================
 DO $$
 BEGIN
@@ -408,17 +413,24 @@ DO $$
 BEGIN
     DROP POLICY IF EXISTS "Allow public read on kith_attachments" ON storage.objects;
     CREATE POLICY "Allow public read on kith_attachments"
-    ON storage.objects FOR SELECT
+    ON storage.objects FOR SELECT TO anon, authenticated
     USING (bucket_id = 'kith_attachments');
 
     DROP POLICY IF EXISTS "Allow authenticated upload on kith_attachments" ON storage.objects;
-    CREATE POLICY "Allow authenticated upload on kith_attachments"
-    ON storage.objects FOR INSERT
+    DROP POLICY IF EXISTS "Allow upload on kith_attachments" ON storage.objects;
+    CREATE POLICY "Allow upload on kith_attachments"
+    ON storage.objects FOR INSERT TO anon, authenticated
     WITH CHECK (bucket_id = 'kith_attachments');
 
+    DROP POLICY IF EXISTS "Allow update on kith_attachments" ON storage.objects;
+    CREATE POLICY "Allow update on kith_attachments"
+    ON storage.objects FOR UPDATE TO anon, authenticated
+    USING (bucket_id = 'kith_attachments');
+
     DROP POLICY IF EXISTS "Allow authenticated delete on kith_attachments" ON storage.objects;
-    CREATE POLICY "Allow authenticated delete on kith_attachments"
-    ON storage.objects FOR DELETE
+    DROP POLICY IF EXISTS "Allow delete on kith_attachments" ON storage.objects;
+    CREATE POLICY "Allow delete on kith_attachments"
+    ON storage.objects FOR DELETE TO anon, authenticated
     USING (bucket_id = 'kith_attachments');
 EXCEPTION WHEN OTHERS THEN
     NULL;

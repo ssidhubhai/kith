@@ -66,9 +66,24 @@ export default function App() {
   useEffect(() => {
     const unsub = ChatEngine.subscribeToConnectionState((state) => {
       setConnectionState(state);
+      // Auto-reconcile messages if transitioning back to connected
+      if (state === 'connected' && activeConversationId && currentMember) {
+        ChatEngine.getMessages(activeConversationId, { limit: 50 }).then((res) => {
+          setMessages((prev) => {
+            const map = new Map<string, Message>();
+            prev.forEach((m) => map.set(m.id, m));
+            res.messages.forEach((m) => map.set(m.id, m));
+            return Array.from(map.values()).sort(
+              (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            );
+          });
+        });
+      }
     });
     return () => unsub();
-  }, []);
+  }, [activeConversationId, currentMember]);
+
+
 
   // Supabase Auth session restoration and state listener
   useEffect(() => {
@@ -123,18 +138,42 @@ export default function App() {
     setMembers(fetchedMembers);
     setConversations(fetchedConversations);
 
-    // If active conversation not in list or blank, select first conversation
-    if (fetchedConversations.length > 0) {
-      const exists = fetchedConversations.some((c) => c.id === activeConversationId);
-      if (!exists) {
-        setActiveConversationId(fetchedConversations[0].id);
+    // If no conversation currently active, default to the first one (Collective)
+    setActiveConversationId((prevId) => {
+      if (!prevId && fetchedConversations.length > 0) {
+        return fetchedConversations[0].id;
       }
-    }
-  }, [currentMember, activeConversationId]);
+      return prevId;
+    });
+  }, [currentMember]);
 
   useEffect(() => {
     refreshData();
   }, [refreshData]);
+
+  // Network online recovery listener
+  useEffect(() => {
+    const handleReconnect = () => {
+      if (activeConversationId && currentMember) {
+        ChatEngine.reconcileState(activeConversationId).then((res) => {
+          if (res.messages && res.messages.length > 0) {
+            setMessages((prev) => {
+              const map = new Map<string, Message>();
+              prev.forEach((m) => map.set(m.id, m));
+              res.messages!.forEach((m) => map.set(m.id, m));
+              return Array.from(map.values()).sort(
+                (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+              );
+            });
+          }
+          refreshData();
+        });
+      }
+    };
+
+    window.addEventListener('online', handleReconnect);
+    return () => window.removeEventListener('online', handleReconnect);
+  }, [activeConversationId, currentMember, refreshData]);
 
   // Subscribe to presence and member directory updates
   useEffect(() => {
@@ -187,10 +226,16 @@ export default function App() {
               const idx = prev.findIndex((m) => m.id === msg.id);
               if (idx >= 0) {
                 const updated = [...prev];
-                updated[idx] = { ...prev[idx], ...msg, status: 'sent' };
+                updated[idx] = {
+                  ...prev[idx],
+                  ...msg,
+                  attachments: (msg.attachments && msg.attachments.length > 0) ? msg.attachments : prev[idx].attachments,
+                  status: 'sent'
+                };
                 return updated;
               }
-              return [...prev, msg];
+              const next = [...prev, msg];
+              return next.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
             } else if (action === 'update' || action === 'delete') {
               return prev.map((m) => (m.id === msg.id ? { ...m, ...msg } : m));
             }
@@ -199,6 +244,18 @@ export default function App() {
 
           // Refresh conversations to update last message preview and unread counts
           refreshData();
+        },
+        onAttachmentInsert: (att) => {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id === att.message_id) {
+                const existing = m.attachments || [];
+                if (existing.some((a) => a.id === att.id)) return m;
+                return { ...m, attachments: [...existing, att] };
+              }
+              return m;
+            })
+          );
         },
         onReaction: (reaction, action) => {
           setMessages((prev) =>
@@ -329,11 +386,30 @@ export default function App() {
 
   // Start direct chat with friend
   const handleStartDirectChat = async (targetMember: Member) => {
-    const directConv = await ChatEngine.getOrCreateDirectConversation(targetMember);
-    await refreshData();
-    setActiveConversationId(directConv.id);
-    setMobileView('chat');
-    window.history.pushState({ view: 'chat', convId: directConv.id }, '');
+    try {
+      const directConv = await ChatEngine.getOrCreateDirectConversation(targetMember);
+      setConversations((prev) => {
+        const exists = prev.some((c) => c.id === directConv.id);
+        return exists ? prev : [directConv, ...prev];
+      });
+      setActiveConversationId(directConv.id);
+      setMobileView('chat');
+      if (window.history.state?.convId !== directConv.id) {
+        window.history.pushState({ view: 'chat', convId: directConv.id }, '');
+      }
+    } catch (err) {
+      console.error('Failed to open direct conversation:', err);
+    }
+  };
+
+  // Delete unwanted/stale friend or account
+  const handleDeleteMember = async (memberId: string) => {
+    try {
+      await ChatEngine.deleteMember(memberId);
+      refreshData();
+    } catch (err) {
+      console.error('Failed to delete member:', err);
+    }
   };
 
   // Select conversation
@@ -411,6 +487,7 @@ export default function App() {
           members={members}
           currentMember={currentMember}
           onStartDirectChat={handleStartDirectChat}
+          onDeleteMember={handleDeleteMember}
           onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
           onUpdateDisplayName={(newName) => handleSaveProfile({ display_name: newName })}
           onOpenProfileModal={() => setIsProfileModalOpen(true)}

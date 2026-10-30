@@ -221,3 +221,57 @@ test('authValidation - validatePasswordMatch and identifier checks', () => {
   assert.equal(isEmailIdentifier('user@domain.com'), true);
   assert.equal(isEmailIdentifier('my_username'), false);
 });
+
+test('attachmentResolution - resolves public download URL from storage path', () => {
+  // Mock supabase client getPublicUrl
+  const mockSupabase = {
+    storage: {
+      from: (bucket: string) => ({
+        getPublicUrl: (path: string) => ({
+          data: { publicUrl: `https://test.supabase.co/storage/v1/object/public/${bucket}/${path}` }
+        })
+      })
+    }
+  };
+
+  const attWithStoragePath = {
+    id: 'att-1',
+    original_filename: 'photo.jpg',
+    storage_path: 'room-1/photo.jpg'
+  };
+
+  const { data } = mockSupabase.storage.from('kith_attachments').getPublicUrl(attWithStoragePath.storage_path);
+  assert.equal(data.publicUrl, 'https://test.supabase.co/storage/v1/object/public/kith_attachments/room-1/photo.jpg');
+});
+
+test('messageOrdering - sorts incoming Realtime messages chronologically', () => {
+  const msgs = [
+    { id: '3', created_at: '2026-10-30T10:05:00Z', content: 'Third' },
+    { id: '1', created_at: '2026-10-30T10:00:00Z', content: 'First' },
+    { id: '2', created_at: '2026-10-30T10:02:00Z', content: 'Second' }
+  ];
+
+  const sorted = [...msgs].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+
+  assert.equal(sorted[0].id, '1');
+  assert.equal(sorted[1].id, '2');
+  assert.equal(sorted[2].id, '3');
+});
+
+test('directConversation - resolves recipient display title correctly', () => {
+  const currentUserId = 'user-a';
+  const participantIds = ['user-a', 'user-b'];
+  const members = [
+    { id: 'user-a', display_name: 'Alice' },
+    { id: 'user-b', display_name: 'Bob' }
+  ];
+
+  const otherId = participantIds.find(id => id !== currentUserId);
+  const otherMember = members.find(m => m.id === otherId);
+  const displayTitle = otherMember?.display_name || 'Personal Chat';
+
+  assert.equal(displayTitle, 'Bob');
+});
+

@@ -16,6 +16,7 @@ import {
   ArrowLeft
 } from 'lucide-react';
 import { Member, BackendInfo, AuthView } from '../types';
+import { ChatEngine } from '../lib/chatEngine';
 import {
   getSupabaseConfig,
   isSupabaseConfigured,
@@ -250,18 +251,27 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     }
   };
 
-  // Guest / Demo entry fallback
-  const handleGuestDemo = () => {
-    setExplicitLocalMode(true);
+  // Guest / Quick entry fallback
+  const handleGuestDemo = async () => {
+    const guestId = crypto.randomUUID();
     const guestMember: Member = {
-      id: crypto.randomUUID(),
+      id: guestId,
       display_name: 'Guest Friend',
       avatar_color: '#8B7CF6',
       last_seen_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
       is_online: true
     };
-    localStorage.setItem('kith_current_member', JSON.stringify(guestMember));
+    if (isSupabaseConfigured()) {
+      try {
+        await ChatEngine.setCurrentMember('Guest Friend', guestId, guestMember);
+      } catch {
+        localStorage.setItem('kith_current_member', JSON.stringify(guestMember));
+      }
+    } else {
+      setExplicitLocalMode(true);
+      localStorage.setItem('kith_current_member', JSON.stringify(guestMember));
+    }
     onAuthenticated(guestMember);
   };
 
