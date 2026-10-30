@@ -1,12 +1,30 @@
 import { useEffect, useState } from 'react';
 
-interface BeforeInstallPromptEvent extends Event {
+export interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 }
 
+let globalDeferredPrompt: BeforeInstallPromptEvent | null = null;
+const listeners = new Set<(prompt: BeforeInstallPromptEvent | null) => void>();
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    globalDeferredPrompt = e as BeforeInstallPromptEvent;
+    listeners.forEach((cb) => cb(globalDeferredPrompt));
+  });
+
+  window.addEventListener('appinstalled', () => {
+    globalDeferredPrompt = null;
+    listeners.forEach((cb) => cb(null));
+  });
+}
+
 export function usePWAInstall() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(
+    () => globalDeferredPrompt
+  );
   const [isInstalled, setIsInstalled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
 
@@ -22,35 +40,55 @@ export function usePWAInstall() {
     const isIOSDevice = /iphone|ipad|ipod/.test(userAgent);
     setIsIOS(isIOSDevice);
 
-    const handleBeforeInstallPrompt = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
+    const handlePromptChange = (prompt: BeforeInstallPromptEvent | null) => {
+      setDeferredPrompt(prompt);
     };
+
+    listeners.add(handlePromptChange);
 
     const handleAppInstalled = () => {
       setIsInstalled(true);
       setDeferredPrompt(null);
     };
 
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     window.addEventListener('appinstalled', handleAppInstalled);
 
     return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      listeners.delete(handlePromptChange);
       window.removeEventListener('appinstalled', handleAppInstalled);
     };
   }, []);
 
-  const install = async () => {
-    if (!deferredPrompt) return false;
-    await deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
-      return true;
+  const install = async (): Promise<{
+    success: boolean;
+    outcome: 'accepted' | 'dismissed' | 'unsupported';
+    error?: string;
+  }> => {
+    if (!deferredPrompt) {
+      return {
+        success: false,
+        outcome: 'unsupported',
+        error: 'Browser prompt is not ready or restricted in this iframe. Follow manual browser menu installation steps below.'
+      };
     }
-    return false;
+    try {
+      await deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setIsInstalled(true);
+        globalDeferredPrompt = null;
+        setDeferredPrompt(null);
+        return { success: true, outcome: 'accepted' };
+      }
+      return {
+        success: false,
+        outcome: 'dismissed',
+        error: 'Installation prompt was dismissed by user.'
+      };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to trigger installation prompt.';
+      return { success: false, outcome: 'unsupported', error: errorMsg };
+    }
   };
 
   return {
@@ -58,5 +96,7 @@ export function usePWAInstall() {
     isInstalled,
     isIOS,
     install,
+    deferredPrompt
   };
 }
+

@@ -115,6 +115,16 @@ export default function App() {
   }, []);
 
 
+  // Root beforeinstallprompt listener to capture install event at application level
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      console.log('KithChat root: beforeinstallprompt captured.');
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+  }, []);
+
   // Handle browser back button on mobile
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {

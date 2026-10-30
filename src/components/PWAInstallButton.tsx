@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Download, Share2, X, CheckCircle2, Sparkles, Copy, Check, ExternalLink } from 'lucide-react';
+import { Download, Share2, X, CheckCircle2, Sparkles, Copy, Check, ExternalLink, AlertCircle, Info } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 
 interface PWAInstallButtonProps {
@@ -16,6 +16,10 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   const [isInstalling, setIsInstalling] = useState(false);
   const [showManualGuide, setShowManualGuide] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [installMessage, setInstallMessage] = useState<{
+    type: 'success' | 'error' | 'info';
+    text: string;
+  } | null>(null);
 
   // If app is already installed in standalone mode, hide button
   if (isInstalled) {
@@ -23,23 +27,37 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   }
 
   const handleDownloadClick = async () => {
-    if (isInstallable) {
-      setIsInstalling(true);
-      try {
-        const success = await install();
-        if (success) {
+    setInstallMessage(null);
+    setIsInstalling(true);
+    try {
+      const res = await install();
+      if (res.success) {
+        setInstallMessage({
+          type: 'success',
+          text: 'Download & installation started! Adding KithChat to your home screen...',
+        });
+        // Automatically close modal banner on successful start
+        setTimeout(() => {
           setShowModal(false);
-        } else {
-          setShowManualGuide(true);
-        }
-      } catch {
+          setInstallMessage(null);
+        }, 1600);
+      } else {
+        setInstallMessage({
+          type: res.outcome === 'dismissed' ? 'info' : 'error',
+          text:
+            res.error ||
+            'Installation prompt unavailable automatically. Follow browser steps below or use browser menu.',
+        });
         setShowManualGuide(true);
-      } finally {
-        setIsInstalling(false);
       }
-    } else {
-      // Show explicit step-by-step manual install guide inside modal
+    } catch (err) {
+      setInstallMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'An error occurred during installation.',
+      });
       setShowManualGuide(true);
+    } finally {
+      setIsInstalling(false);
     }
   };
 
@@ -57,6 +75,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
           type="button"
           onClick={() => {
             setShowManualGuide(false);
+            setInstallMessage(null);
             setShowModal(true);
           }}
           className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#8B7CF6] hover:bg-[#7868E8] text-white rounded-xl text-xs font-semibold shadow-2xs transition cursor-pointer ${className}`}
@@ -69,6 +88,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
           type="button"
           onClick={() => {
             setShowManualGuide(false);
+            setInstallMessage(null);
             setShowModal(true);
           }}
           title="Download & Install Kith App"
@@ -107,6 +127,28 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
                 </p>
               </div>
             </div>
+
+            {/* Status or Error Feedback Banner */}
+            {installMessage && (
+              <div
+                className={`p-2.5 rounded-xl border text-xs flex items-start gap-2 animate-in fade-in duration-150 ${
+                  installMessage.type === 'success'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : installMessage.type === 'error'
+                    ? 'bg-rose-50 border-rose-200 text-rose-800'
+                    : 'bg-amber-50 border-amber-200 text-amber-800'
+                }`}
+              >
+                {installMessage.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                ) : installMessage.type === 'error' ? (
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                ) : (
+                  <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                )}
+                <span className="leading-snug">{installMessage.text}</span>
+              </div>
+            )}
 
             {/* Body Content */}
             {isIOS ? (
@@ -218,5 +260,6 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
     </>
   );
 };
+
 
 
