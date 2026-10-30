@@ -143,3 +143,54 @@ export function validatePasswordMatch(password: string, confirmPassword: string)
 export function isEmailIdentifier(identifier: string): boolean {
   return identifier.includes('@');
 }
+
+/**
+ * Domain used for internal auth aliases when users register without an email.
+ */
+export const INTERNAL_EMAIL_DOMAIN = 'internal.kith.app';
+
+/**
+ * Generates an internal alias email for pure username-based authentication.
+ */
+export function generateInternalEmail(username: string): string {
+  const clean = username.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return `${clean}@${INTERNAL_EMAIL_DOMAIN}`;
+}
+
+/**
+ * Checks if an email is an internal alias rather than a real user-linked email.
+ */
+export function isInternalEmail(email?: string | null): boolean {
+  if (!email) return false;
+  return email.toLowerCase().endsWith(`@${INTERNAL_EMAIL_DOMAIN}`) || email.toLowerCase().endsWith('.local');
+}
+
+/**
+ * Derives a clean, valid username from a Google account email or display name.
+ */
+export function deriveUsernameFromGoogle(email?: string | null, name?: string | null): string {
+  let candidate = '';
+  if (email && email.includes('@')) {
+    candidate = email.split('@')[0];
+  } else if (name) {
+    candidate = name;
+  }
+
+  // Clean candidate: lowercase, keep letters, numbers, and underscores
+  let clean = candidate.toLowerCase().replace(/[\s.-]+/g, '_').replace(/[^a-z0-9_]/g, '');
+
+  // Ensure it starts with a letter or number
+  clean = clean.replace(/^[^a-z0-9]+/, '');
+
+  // Truncate to 18 chars to leave room for potential suffixes
+  if (clean.length > 18) {
+    clean = clean.slice(0, 18);
+  }
+
+  // Fallback if empty or too short (< 3 chars)
+  if (clean.length < 3) {
+    clean = `user_${Math.random().toString(36).substring(2, 7)}`;
+  }
+
+  return clean;
+}

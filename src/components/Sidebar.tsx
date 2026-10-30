@@ -118,39 +118,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* Backend status indicator */}
-        <button
-          type="button"
-          onClick={onOpenSupabaseModal}
-          title={backendInfo.message || 'Supabase Backend Status'}
-          aria-label={`Database status: ${backendInfo.status}`}
-          className="flex items-center gap-1.5 text-xs text-[#827D8B] hover:text-[#24212B] transition-all cursor-pointer py-1.5 px-2.5 rounded-xl border border-[#EAE5E0] bg-white hover:border-[#8B7CF6]/40 shadow-2xs min-h-[36px]"
+        {/* Connection status indicator - Unclickable */}
+        <div
+          className="flex items-center gap-1.5 text-xs text-[#827D8B] py-1.5 px-2.5 rounded-xl border border-[#EAE5E0] bg-white shadow-2xs select-none pointer-events-none"
+          title={backendInfo.status === 'connected' ? 'Connected to circle' : 'Connecting'}
         >
           <span
             className={`w-2 h-2 rounded-full shrink-0 ${
               backendInfo.status === 'connected'
                 ? 'bg-emerald-500 ring-2 ring-emerald-100'
-                : backendInfo.status === 'connecting' || backendInfo.status === 'reconnecting'
-                ? 'bg-blue-500 animate-pulse'
-                : backendInfo.status === 'local_only'
-                ? 'bg-amber-400'
                 : 'bg-rose-500 ring-2 ring-rose-100'
             }`}
           />
           <span className="text-[11px] font-semibold text-[#24212B]">
-            {backendInfo.status === 'connected'
-              ? 'Supabase'
-              : backendInfo.status === 'connecting'
-              ? 'Connecting'
-              : backendInfo.status === 'reconnecting'
-              ? 'Reconnecting'
-              : backendInfo.status === 'missing_schema_or_permissions'
-              ? 'Fix Schema'
-              : backendInfo.status === 'local_only'
-              ? 'Local Demo'
-              : 'Connect DB'}
+            {backendInfo.status === 'connected' ? 'Live' : 'Connecting'}
           </span>
-        </button>
+        </div>
       </div>
 
       {/* User Identity Card */}

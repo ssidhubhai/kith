@@ -202,36 +202,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           <span>Connection disrupted. Messages will retry when connection returns.</span>
         </div>
       )}
-      {connectionState === 'missing_schema_or_permissions' && (
-        <div className="bg-amber-50 border-b border-amber-200 text-amber-800 px-4 py-1.5 text-xs font-medium flex items-center justify-between gap-2 z-30 shrink-0">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-            <span>Connected to Supabase, but database tables or permissions need setup.</span>
-          </div>
-          <button
-            type="button"
-            onClick={onOpenSupabaseModal}
-            className="underline font-semibold hover:text-amber-950 cursor-pointer text-[11px] shrink-0"
-          >
-            Run Migration
-          </button>
-        </div>
-      )}
-      {connectionState === 'local_only' && (
-        <div className="bg-neutral-100 border-b border-neutral-200 text-neutral-700 px-4 py-1.5 text-xs font-medium flex items-center justify-between gap-2 z-30 shrink-0">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-            <span>Local Demo Mode: Messages only sync across tabs on this device.</span>
-          </div>
-          <button
-            type="button"
-            onClick={onOpenSupabaseModal}
-            className="text-[#8B7CF6] font-semibold underline hover:text-[#7868E8] cursor-pointer text-[11px] shrink-0"
-          >
-            Connect Cloud
-          </button>
-        </div>
-      )}
 
       {/* Top Header Bar */}
       <header className="px-3 sm:px-4 md:px-6 py-2.5 sm:py-3.5 border-b border-[#EAE5E0] flex items-center justify-between gap-3 bg-[#FAF8F5]/95 backdrop-blur-xs z-20 shrink-0 safe-area-top">
@@ -360,16 +330,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               <User className="w-4 h-4" />
             </button>
           )}
-
-          <button
-            type="button"
-            onClick={onOpenSupabaseModal}
-            title="Database & Storage Settings"
-            aria-label="Database settings"
-            className="min-w-[36px] min-h-[36px] flex items-center justify-center text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] rounded-xl transition-colors cursor-pointer"
-          >
-            <Database className="w-4 h-4" />
-          </button>
         </div>
       </header>
 

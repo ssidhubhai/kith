@@ -126,26 +126,14 @@ export function isSupabaseConfigured(): boolean {
 }
 
 /**
- * Checks if the user explicitly opted into local single-device demo mode.
- * Crucial fix: If Supabase is configured via build-time env or saved config,
- * local demo mode is NEVER active. Cloud backend ALWAYS takes precedence.
+ * Local mode is permanently disabled in favor of real end-to-end cloud persistence.
  */
 export function isLocalModeExplicitlyEnabled(): boolean {
-  if (typeof window === 'undefined') return false;
-  if (isSupabaseConfigured()) return false;
-  return localStorage.getItem(LOCAL_MODE_FLAG) === 'true';
+  return false;
 }
 
-export function setExplicitLocalMode(enabled: boolean): void {
-  if (typeof window === 'undefined') return;
-  if (enabled) {
-    localStorage.setItem(LOCAL_MODE_FLAG, 'true');
-    notifyBackendInfo({
-      status: 'local_only',
-      source: 'none',
-      message: 'Using local-only storage (Single device mesh). Messages will not reach other devices.'
-    });
-  } else {
+export function setExplicitLocalMode(_enabled: boolean): void {
+  if (typeof window !== 'undefined') {
     localStorage.removeItem(LOCAL_MODE_FLAG);
   }
 }
@@ -159,10 +147,6 @@ export function isEnvConfigured(): boolean {
  * Retrieves the initialized Supabase client singleton, or null if unconfigured.
  */
 export function getSupabase(): SupabaseClient | null {
-  if (isLocalModeExplicitlyEnabled() && !isEnvConfigured()) {
-    return null;
-  }
-
   const config = getSupabaseConfig();
   if (!isSupabaseConfigured()) {
     return null;
@@ -495,26 +479,32 @@ export async function checkUsernameAvailability(username: string): Promise<{ ava
   }
 }
 
-/**
- * Resolves a username to the registered email address for sign-in.
- */
-export async function findEmailForUsername(username: string): Promise<string | null> {
-  const supabase = getSupabase();
-  if (!supabase) return null;
+import { generateInternalEmail, isInternalEmail } from '../utils/authValidation';
 
+/**
+ * Resolves a username to the registered email address or internal alias for sign-in.
+ */
+export async function findEmailForUsername(username: string): Promise<string> {
+  const supabase = getSupabase();
   const clean = username.trim().toLowerCase();
+  const defaultInternalEmail = generateInternalEmail(clean);
+
+  if (!supabase) return defaultInternalEmail;
 
   // Try RPC first (security definer)
   try {
     const { data, error } = await supabase.rpc('get_email_for_username', { p_username: clean });
-    if (!error && data) {
-      return String(data).trim();
+    if (!error && data && typeof data === 'string' && data.trim()) {
+      const email = data.trim();
+      if (!isInternalEmail(email)) {
+        return email;
+      }
     }
   } catch {
     // fallback
   }
 
-  // Fallback to direct query on members table
+  // Check direct query on members table
   try {
     const { data, error } = await supabase
       .from('members')
@@ -522,24 +512,25 @@ export async function findEmailForUsername(username: string): Promise<string | n
       .ilike('username', clean)
       .maybeSingle();
 
-    if (!error && data?.email) {
+    if (!error && data?.email && !isInternalEmail(data.email)) {
       return String(data.email).trim();
     }
   } catch {
-    // ignore
+    // fallback to internal alias
   }
 
-  return null;
+  return defaultInternalEmail;
 }
 
 /**
- * Registers a new permanent account with username, email, password, and display name.
+ * Registers a new permanent account with username, password, and optional display name/email.
+ * No email is required; pure username+password creates a collision-free internal identity.
  */
 export async function signUpWithAccount(params: {
   username: string;
-  email: string;
   password: string;
-  displayName: string;
+  displayName?: string;
+  email?: string;
 }): Promise<{ success: boolean; user?: any; session?: any; error?: string }> {
   const supabase = getSupabase();
   if (!supabase) {
@@ -547,8 +538,8 @@ export async function signUpWithAccount(params: {
   }
 
   const cleanUsername = params.username.trim().toLowerCase();
-  const cleanEmail = params.email.trim().toLowerCase();
-  const cleanDisplayName = params.displayName.trim() || cleanUsername;
+  const cleanDisplayName = params.displayName?.trim() || cleanUsername;
+  const cleanEmail = params.email?.trim().toLowerCase() || '';
 
   // Verify username uniqueness
   const availability = await checkUsernameAvailability(cleanUsername);
@@ -556,14 +547,18 @@ export async function signUpWithAccount(params: {
     return { success: false, error: `Username "@${cleanUsername}" is already taken. Please choose another.` };
   }
 
+  // If no email was given, generate internal alias
+  const authEmail = cleanEmail || generateInternalEmail(cleanUsername);
+
   try {
     const { data, error } = await supabase.auth.signUp({
-      email: cleanEmail,
+      email: authEmail,
       password: params.password,
       options: {
         data: {
           username: cleanUsername,
           display_name: cleanDisplayName,
+          has_linked_email: Boolean(cleanEmail),
           avatar_color: '#8B7CF6'
         }
       }
@@ -583,9 +578,10 @@ export async function signUpWithAccount(params: {
         id: data.user.id,
         display_name: cleanDisplayName,
         username: cleanUsername,
-        email: cleanEmail,
+        email: cleanEmail || null,
         avatar_color: '#8B7CF6',
-        last_seen_at: new Date().toISOString()
+        last_seen_at: new Date().toISOString(),
+        created_at: new Date().toISOString()
       }, { onConflict: 'id' });
     } catch {
       // ignore, auth trigger handles it on DB
@@ -617,16 +613,9 @@ export async function signInWithIdentifier(
   const clean = identifier.trim();
   let emailToUse = clean;
 
-  // If identifier does not have '@', it's a username; resolve it to email
+  // If identifier does not have '@', it's a username; resolve it
   if (!clean.includes('@')) {
-    const resolved = await findEmailForUsername(clean);
-    if (!resolved) {
-      return {
-        success: false,
-        error: `No account found with username "@${clean}". Please check your username or register.`
-      };
-    }
-    emailToUse = resolved;
+    emailToUse = await findEmailForUsername(clean);
   }
 
   try {
@@ -644,6 +633,45 @@ export async function signInWithIdentifier(
       user: data.user,
       session: data.session
     };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Links a real recovery email address to the current user account.
+ */
+export async function linkEmailToAccount(newEmail: string): Promise<{ success: boolean; error?: string }> {
+  const supabase = getSupabase();
+  if (!supabase) {
+    return { success: false, error: 'Supabase cloud backend is not connected.' };
+  }
+
+  const clean = newEmail.trim().toLowerCase();
+  try {
+    const { data, error } = await supabase.auth.updateUser({
+      email: clean,
+      data: { has_linked_email: true }
+    });
+
+    if (error) {
+      return { success: false, error: error.message };
+    }
+
+    // Also update public.members record
+    if (data.user) {
+      try {
+        await supabase
+          .from('members')
+          .update({ email: clean })
+          .eq('id', data.user.id);
+      } catch {
+        // ignore
+      }
+    }
+
+    return { success: true };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, error: msg };

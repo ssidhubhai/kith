@@ -26,9 +26,10 @@ import {
   getAuthIdentities,
   linkGoogleAccount,
   unlinkProviderAccount,
-  updateUserPassword
+  updateUserPassword,
+  linkEmailToAccount
 } from '../lib/supabaseClient';
-import { validatePassword, validatePasswordMatch } from '../utils/authValidation';
+import { validatePassword, validatePasswordMatch, validateEmail, isInternalEmail } from '../utils/authValidation';
 
 interface AccountSettingsModalProps {
   isOpen: boolean;
@@ -90,6 +91,12 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
   const [confirmingUnlinkId, setConfirmingUnlinkId] = useState<string | null>(null);
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
 
+  // Email linking state
+  const [linkingEmail, setLinkingEmail] = useState('');
+  const [isEditingEmail, setIsEditingEmail] = useState(false);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailMessage, setEmailMessage] = useState<{ success: boolean; text: string } | null>(null);
+
   useEffect(() => {
     if (isOpen) {
       setDisplayName(currentMember.display_name || '');
@@ -100,6 +107,11 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
       setHideLastSeen(!!currentMember.hide_last_seen);
       setPasswordMessage(null);
       setOauthError(null);
+      setEmailMessage(null);
+      setIsEditingEmail(false);
+      setLinkingEmail(
+        currentMember.email && !isInternalEmail(currentMember.email) ? currentMember.email : ''
+      );
 
       // Load auth identities
       getCurrentAuthUser().then(user => {
@@ -164,6 +176,30 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
       setConfirmNewPassword('');
     } else {
       setPasswordMessage({ success: false, text: res.error || 'Failed to update password.' });
+    }
+  };
+
+  const handleSaveEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEmailMessage(null);
+
+    const clean = linkingEmail.trim().toLowerCase();
+    const eVal = validateEmail(clean);
+    if (!eVal.valid) {
+      setEmailMessage({ success: false, text: eVal.error || 'Please enter a valid email address.' });
+      return;
+    }
+
+    setEmailLoading(true);
+    const res = await linkEmailToAccount(clean);
+    setEmailLoading(false);
+
+    if (res.success) {
+      setEmailMessage({ success: true, text: 'Recovery email linked successfully! You can now use it for login and password recovery.' });
+      setIsEditingEmail(false);
+      await onSaveProfile({ email: clean });
+    } else {
+      setEmailMessage({ success: false, text: res.error || 'Failed to link email address.' });
     }
   };
 
@@ -443,36 +479,141 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                 </div>
               )}
 
-              {/* Permanent Account Identity */}
-              <div className="p-4 bg-white border border-[#EAE5E0] rounded-2xl space-y-3">
+              {/* Permanent Account Identity & Recovery Email */}
+              <div className="p-4 bg-white border border-[#EAE5E0] rounded-2xl space-y-3.5">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold text-[#24212B] flex items-center gap-2">
                     <Shield className="w-4 h-4 text-[#8B7CF6]" />
                     Permanent Identity
                   </h3>
                   <span className="text-[11px] font-mono text-[#827D8B] bg-[#FAF8F5] px-2 py-0.5 rounded border border-[#EAE5E0]">
-                    Supabase Auth
+                    {currentMember.auth_provider === 'google' ? 'Google Account' : 'Username Account'}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <span className="text-[#A39EAA] block text-[10px] uppercase font-mono">Username</span>
-                    <span className="font-semibold text-[#24212B]">
-                      {currentMember.username ? `@${currentMember.username}` : 'Not assigned'}
-                    </span>
+                {emailMessage && (
+                  <div
+                    className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                      emailMessage.success
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                        : 'bg-rose-50 text-rose-800 border border-rose-200'
+                    }`}
+                  >
+                    {emailMessage.success ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                    )}
+                    <span>{emailMessage.text}</span>
                   </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
                   <div>
-                    <span className="text-[#A39EAA] block text-[10px] uppercase font-mono">Account Email</span>
-                    <span className="font-semibold text-[#24212B]">
-                      {currentMember.email || authUser?.email || 'None on record'}
+                    <span className="text-[#A39EAA] block text-[10px] uppercase font-mono mb-0.5">Username</span>
+                    <span className="font-semibold text-sm text-[#24212B] flex items-center gap-1">
+                      <span className="text-[#8B7CF6]">@</span>
+                      {currentMember.username || 'unassigned'}
                     </span>
+                    <p className="text-[10px] text-[#A39EAA] mt-0.5">Your primary login identifier</p>
                   </div>
-                  <div className="sm:col-span-2">
-                    <span className="text-[#A39EAA] block text-[10px] uppercase font-mono">User ID</span>
-                    <span className="font-mono text-[11px] text-[#6B6575] break-all">{currentMember.id}</span>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-[#A39EAA] block text-[10px] uppercase font-mono">Recovery Email</span>
+                      {currentMember.email && !isInternalEmail(currentMember.email) ? (
+                        <span className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded font-medium flex items-center gap-1">
+                          <Check className="w-2.5 h-2.5" /> Linked
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded font-medium">
+                          Unlinked
+                        </span>
+                      )}
+                    </div>
+
+                    {currentMember.email && !isInternalEmail(currentMember.email) ? (
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-xs text-[#24212B] truncate mr-2">
+                          {currentMember.email}
+                        </span>
+                        {!isEditingEmail && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsEditingEmail(true);
+                              setEmailMessage(null);
+                            }}
+                            className="text-[11px] text-[#8B7CF6] hover:underline shrink-0"
+                          >
+                            Change
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div>
+                        {!isEditingEmail ? (
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-[#827D8B]">None (Username-only)</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsEditingEmail(true);
+                                setEmailMessage(null);
+                              }}
+                              className="text-[11px] font-semibold text-[#8B7CF6] hover:underline shrink-0"
+                            >
+                              + Link Email
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
                 </div>
+
+                {/* Inline Email Linking Form */}
+                {isEditingEmail && (
+                  <form onSubmit={handleSaveEmail} className="pt-2 border-t border-[#F0ECE6] space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-medium text-[#4A4553]">
+                        Link a Recovery Email Address
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingEmail(false)}
+                        className="text-[11px] text-[#827D8B] hover:text-[#24212B]"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-[#A39EAA]">
+                          <Mail className="w-3.5 h-3.5" />
+                        </div>
+                        <input
+                          type="email"
+                          value={linkingEmail}
+                          onChange={(e) => setLinkingEmail(e.target.value)}
+                          placeholder="your.email@example.com"
+                          required
+                          className="w-full pl-8 pr-3 py-1.5 bg-[#FAF8F5] border border-[#EAE5E0] focus:border-[#8B7CF6] focus:bg-white rounded-xl text-xs text-[#24212B] outline-none"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={emailLoading || !linkingEmail.trim()}
+                        className="px-3.5 py-1.5 bg-[#8B7CF6] hover:bg-[#7C6BF5] disabled:opacity-50 text-white text-xs font-semibold rounded-xl transition-all shadow-xs flex items-center gap-1.5"
+                      >
+                        {emailLoading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>Save Email</span>}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-[#827D8B] leading-relaxed">
+                      Linking a real email enables password reset if you ever forget your password, without changing your username.
+                    </p>
+                  </form>
+                )}
               </div>
 
               {/* Connected Accounts: Google */}

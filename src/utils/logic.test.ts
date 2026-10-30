@@ -20,7 +20,10 @@ import {
   validateEmail,
   validatePassword,
   validatePasswordMatch,
-  isEmailIdentifier
+  isEmailIdentifier,
+  generateInternalEmail,
+  isInternalEmail,
+  deriveUsernameFromGoogle
 } from './authValidation';
 
 
@@ -220,6 +223,30 @@ test('authValidation - validatePasswordMatch and identifier checks', () => {
 
   assert.equal(isEmailIdentifier('user@domain.com'), true);
   assert.equal(isEmailIdentifier('my_username'), false);
+});
+
+test('authValidation - internal email alias generation and detection', () => {
+  const internal = generateInternalEmail('alex99');
+  assert.equal(internal, 'alex99@internal.kith.app');
+  assert.equal(isInternalEmail(internal), true);
+  assert.equal(isInternalEmail('alex99@users.kith.local'), true);
+
+  // Real emails must NOT be flagged as internal
+  assert.equal(isInternalEmail('alex@gmail.com'), false);
+  assert.equal(isInternalEmail('jordan@company.org'), false);
+  assert.equal(isInternalEmail(undefined), false);
+  assert.equal(isInternalEmail(null), false);
+});
+
+test('authValidation - deriveUsernameFromGoogle sanitizes Google profile identifiers', () => {
+  assert.equal(deriveUsernameFromGoogle('alex.smith@gmail.com', 'Alex Smith'), 'alex_smith');
+  assert.equal(deriveUsernameFromGoogle('cool_guy-99@yahoo.com', 'Cool Guy'), 'cool_guy_99');
+  assert.equal(deriveUsernameFromGoogle(null, 'John Doe-Junior'), 'john_doe_junior');
+
+  // Edge cases: very short or strange chars
+  const fallback = deriveUsernameFromGoogle('a@x.com', null);
+  assert.equal(fallback.length >= 3, true);
+  assert.equal(fallback.startsWith('user_'), true);
 });
 
 test('attachmentResolution - resolves public download URL from storage path', () => {

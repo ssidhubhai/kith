@@ -11,6 +11,7 @@ import { getSupabase, isSupabaseConfigured, isLocalModeExplicitlyEnabled } from 
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { sanitizeFilename, validateFileSize } from '../utils/fileValidation';
 import { getDirectConversationKey } from '../utils/conversationUtils';
+import { deriveUsernameFromGoogle, isInternalEmail } from '../utils/authValidation';
 
 const DEFAULT_GROUP_ID = '00000000-0000-0000-0000-000000000001';
 const CURRENT_MEMBER_STORAGE_KEY = 'kith_current_member';
@@ -298,27 +299,65 @@ export class ChatEngine {
         .maybeSingle();
 
       if (data) {
+        // If user logged in with a real external provider (e.g. Google), sync real email if missing
+        const realEmail = user.email && !isInternalEmail(user.email) ? user.email : (data.email && !isInternalEmail(data.email) ? data.email : undefined);
+        const provider = user.app_metadata?.provider || data.auth_provider || 'email';
+
+        if (realEmail && (!data.email || isInternalEmail(data.email))) {
+          try {
+            await supabase.from('members').update({ email: realEmail, auth_provider: provider }).eq('id', user.id);
+          } catch {
+            // ignore
+          }
+        }
+
         const member: Member = {
           ...data,
-          email: user.email,
-          auth_provider: user.app_metadata?.provider || 'email',
+          email: realEmail,
+          auth_provider: provider,
           is_online: true
         };
         localStorage.setItem(CURRENT_MEMBER_STORAGE_KEY, JSON.stringify(member));
         return member;
       }
 
-      // If user exists in Auth but public.members record is pending sync
+      // If user exists in Auth but public.members record is pending sync (e.g. Brand New Google Sign-In)
       const meta = user.user_metadata || {};
-      const fallbackUsername = meta.username || user.email?.split('@')[0]?.toLowerCase().replace(/[^a-z0-9_]/g, '_') || `user_${user.id.slice(0, 5)}`;
+      const provider = user.app_metadata?.provider || 'email';
+      const isGoogle = provider === 'google';
+
+      let assignedUsername = meta.username;
+      if (!assignedUsername) {
+        const candidate = deriveUsernameFromGoogle(user.email, meta.full_name || meta.name);
+        // Check uniqueness in database
+        try {
+          const { data: existing } = await supabase
+            .from('members')
+            .select('id')
+            .ilike('username', candidate)
+            .maybeSingle();
+
+          if (existing) {
+            assignedUsername = `${candidate}_${Math.floor(100 + Math.random() * 900)}`;
+          } else {
+            assignedUsername = candidate;
+          }
+        } catch {
+          assignedUsername = `${candidate}_${Math.floor(100 + Math.random() * 900)}`;
+        }
+      }
+
+      const realEmail = user.email && !isInternalEmail(user.email) ? user.email : undefined;
+      const displayName = meta.display_name || meta.full_name || meta.name || assignedUsername;
+
       const newMember: Member = {
         id: user.id,
-        display_name: meta.display_name || meta.full_name || fallbackUsername,
-        username: fallbackUsername,
-        email: user.email,
-        auth_provider: user.app_metadata?.provider || 'email',
+        display_name: displayName,
+        username: assignedUsername,
+        email: realEmail,
+        auth_provider: isGoogle ? 'google' : 'email',
         avatar_color: '#8B7CF6',
-        avatar_url: meta.avatar_url || meta.picture,
+        avatar_url: meta.avatar_url || meta.picture || undefined,
         last_seen_at: new Date().toISOString(),
         created_at: new Date().toISOString(),
         is_online: true
