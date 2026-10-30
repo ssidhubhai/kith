@@ -14,14 +14,19 @@ import {
 } from '../lib/supabaseClient';
 import { ChatEngine } from '../lib/chatEngine';
 
+import { AvatarSelector } from './AvatarSelector';
+
 interface EntryScreenProps {
-  onEnter: (name: string, memberId?: string) => void;
+  onEnter: (name: string, memberId?: string, initialProfile?: Partial<Member>) => void;
   currentMember?: Member | null;
   onClearData?: () => void;
 }
 
 export const EntryScreen: React.FC<EntryScreenProps> = ({ onEnter, currentMember, onClearData }) => {
   const [name, setName] = useState(currentMember?.display_name || '');
+  const [avatarUrl, setAvatarUrl] = useState(currentMember?.avatar_url || '');
+  const [avatarColor, setAvatarColor] = useState(currentMember?.avatar_color || '#8B7CF6');
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [backendInfo, setBackendInfo] = useState<BackendInfo>(getCurrentBackendInfo());
@@ -50,7 +55,10 @@ export const EntryScreen: React.FC<EntryScreenProps> = ({ onEnter, currentMember
       return;
     }
     setError(null);
-    onEnter(trimmed);
+    onEnter(trimmed, currentMember?.id, {
+      avatar_url: avatarUrl || undefined,
+      avatar_color: avatarColor
+    });
   };
 
   const handleConnectSupabase = async (e: React.FormEvent) => {
@@ -325,6 +333,49 @@ export const EntryScreen: React.FC<EntryScreenProps> = ({ onEnter, currentMember
             />
             {error && (
               <p className="mt-1.5 text-xs text-rose-600 font-medium">{error}</p>
+            )}
+          </div>
+
+          {/* Avatar Setup Block */}
+          <div className="pt-1 border-t border-[#EAE5E0]">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-[#24212B]">
+                Your Avatar <span className="text-[10px] text-[#827D8B] font-normal">(choose or upload)</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowAvatarPicker(!showAvatarPicker)}
+                className="text-[11px] font-medium text-[#8B7CF6] hover:text-[#7C6AE6] cursor-pointer"
+              >
+                {showAvatarPicker ? 'Hide Options' : avatarUrl ? 'Change Avatar' : 'Custom Avatar'}
+              </button>
+            </div>
+
+            {showAvatarPicker ? (
+              <div className="mt-2">
+                <AvatarSelector
+                  currentAvatarUrl={avatarUrl}
+                  displayName={name || 'Friend'}
+                  avatarColor={avatarColor}
+                  onAvatarChange={(newUrl) => setAvatarUrl(newUrl)}
+                />
+              </div>
+            ) : avatarUrl ? (
+              <div className="flex items-center gap-2.5 p-2 bg-[#F0ECFF]/60 border border-[#DDD6FE] rounded-xl">
+                <img src={avatarUrl} alt="Selected avatar" className="w-8 h-8 rounded-lg object-cover" />
+                <span className="text-xs text-[#6D28D9] font-medium flex-1 truncate">Avatar selected!</span>
+                <button
+                  type="button"
+                  onClick={() => setAvatarUrl('')}
+                  className="text-[10px] text-rose-600 font-medium cursor-pointer"
+                >
+                  Remove
+                </button>
+              </div>
+            ) : (
+              <p className="text-[11px] text-[#827D8B]">
+                A letter avatar will be generated, or tap <button type="button" onClick={() => setShowAvatarPicker(true)} className="text-[#8B7CF6] font-medium underline cursor-pointer">Custom Avatar</button> to upload from computer or pick from gallery.
+              </p>
             )}
           </div>
 

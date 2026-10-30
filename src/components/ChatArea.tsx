@@ -287,15 +287,26 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             className="min-w-0 cursor-pointer"
             onClick={() => otherMember && onOpenFriendProfile?.(otherMember)}
           >
-            <h2 className="text-sm font-bold text-[#24212B] tracking-tight truncate flex items-center gap-1.5">
-              <span>{conversation.title}</span>
-              {otherMember?.nickname && (
-                <span className="text-[11px] font-normal text-[#827D8B] hidden sm:inline">
-                  @{otherMember.nickname}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <h2 className="text-sm font-bold text-[#24212B] tracking-tight truncate flex items-center gap-1.5">
+                <span>{conversation.title}</span>
+                {otherMember?.nickname && (
+                  <span className="text-[11px] font-normal text-[#827D8B] hidden sm:inline">
+                    @{otherMember.nickname}
+                  </span>
+                )}
+              </h2>
+              {conversation.type === 'group' ? (
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#EDE9FE] text-[#6D28D9] border border-[#DDD6FE] shrink-0">
+                  The Collective
+                </span>
+              ) : (
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#E0F2FE] text-[#0369A1] border border-[#BAE6FD] shrink-0">
+                  Personal Chat
                 </span>
               )}
-            </h2>
-            <p className="text-[11px] text-[#827D8B] truncate">
+            </div>
+            <p className="text-[11px] text-[#827D8B] truncate mt-0.5">
               {subtitle}
             </p>
           </div>
@@ -444,16 +455,30 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           </div>
         ) : (
           <div className="h-64 sm:h-72 flex flex-col items-center justify-center text-center px-4">
-            <div className="w-10 h-10 rounded-2xl bg-[#F0ECFF] border border-[#DDD6FE] flex items-center justify-center text-[#8B7CF6] mb-3 shadow-xs">
-              <Sparkles className="w-5 h-5 fill-[#8B7CF6]" />
+            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center mb-3 shadow-xs border ${
+              conversation.type === 'group'
+                ? 'bg-[#F0ECFF] border-[#DDD6FE] text-[#8B7CF6]'
+                : 'bg-[#E0F2FE] border-[#BAE6FD] text-[#0284C7]'
+            }`}>
+              {conversation.type === 'group' ? (
+                <Users className="w-5 h-5" />
+              ) : (
+                <User className="w-5 h-5" />
+              )}
             </div>
             <h3 className="text-sm font-semibold text-[#24212B] mb-1">
-              {searchQuery ? 'No messages found' : 'The room is quiet'}
+              {searchQuery
+                ? 'No messages found'
+                : conversation.type === 'group'
+                ? 'The Collective is quiet'
+                : `Say hello to ${otherMember?.display_name || conversation.title}`}
             </h3>
             <p className="text-xs text-[#827D8B] max-w-sm leading-relaxed">
               {searchQuery
                 ? 'Try searching with different keywords.'
-                : 'Share a note, upload a picture, or say hello to your circle.'}
+                : conversation.type === 'group'
+                ? 'This is the shared room for all circle friends. Share an update, post a photo, or start a group chat.'
+                : 'This is a private, direct conversation between you and this friend.'}
             </p>
           </div>
         )}

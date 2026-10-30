@@ -39,6 +39,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenFriendProfile
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [channelScope, setChannelScope] = useState<'all' | 'collective' | 'personal'>('all');
 
   const groupConversations = conversations.filter(c => c.type === 'group');
   const directConversations = conversations.filter(c => c.type === 'direct');
@@ -240,6 +241,52 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
+      {/* Scope Filter Segmented Tabs */}
+      <div className="px-3 pt-2 pb-1 border-b border-[#EAE5E0] bg-[#FAF8F5]/80">
+        <div className="flex items-center p-1 bg-[#EAE5E0]/60 rounded-xl gap-1 text-xs">
+          <button
+            type="button"
+            onClick={() => setChannelScope('all')}
+            className={`flex-1 py-1.5 px-2 rounded-lg font-medium text-center transition-all cursor-pointer ${
+              channelScope === 'all'
+                ? 'bg-white text-[#24212B] shadow-2xs font-semibold'
+                : 'text-[#827D8B] hover:text-[#24212B]'
+            }`}
+          >
+            All
+          </button>
+          <button
+            type="button"
+            onClick={() => setChannelScope('collective')}
+            className={`flex-1 py-1.5 px-2 rounded-lg font-medium text-center transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+              channelScope === 'collective'
+                ? 'bg-white text-[#6D28D9] shadow-2xs font-semibold'
+                : 'text-[#827D8B] hover:text-[#24212B]'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>Collective</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setChannelScope('personal')}
+            className={`flex-1 py-1.5 px-2 rounded-lg font-medium text-center transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+              channelScope === 'personal'
+                ? 'bg-white text-[#0369A1] shadow-2xs font-semibold'
+                : 'text-[#827D8B] hover:text-[#24212B]'
+            }`}
+          >
+            <User className="w-3.5 h-3.5" />
+            <span>Personal</span>
+            {directConversations.length > 0 && (
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-[#E0F2FE] text-[#0369A1] font-mono font-semibold">
+                {directConversations.length}
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+
       {/* Search Bar */}
       <div className="p-3 border-b border-[#EAE5E0] bg-[#FAF8F5]/30">
         <div className="relative">
@@ -248,7 +295,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search circle..."
+            placeholder={
+              channelScope === 'collective'
+                ? 'Search collective...'
+                : channelScope === 'personal'
+                ? 'Search personal chats...'
+                : 'Search circle...'
+            }
             className="w-full h-8 pl-8 pr-3 text-xs bg-white border border-[#EAE5E0] rounded-xl text-[#24212B] placeholder-[#A39E98] focus:outline-none focus:border-[#8B7CF6] focus:ring-1 focus:ring-[#8B7CF6]/30 transition-all"
           />
         </div>
@@ -256,104 +309,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Conversation List */}
       <div className="flex-1 overflow-y-auto divide-y divide-[#EAE5E0]/60 min-h-0 safe-area-bottom">
-        {/* Group Chat Section */}
-        <div className="py-2.5">
-          <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#827D8B]">
-            Shared Circle
-          </div>
-          {filteredGroups.map((conv) => {
-            const isActive = conv.id === activeConversationId;
-            return (
-              <button
-                key={conv.id}
-                type="button"
-                onClick={() => onSelectConversation(conv.id)}
-                className={`w-full px-4 py-2.5 text-left flex items-start gap-3 transition-all cursor-pointer min-h-[52px] ${
-                  isActive
-                    ? 'bg-[#F0ECFF] border-l-[3px] border-l-[#8B7CF6]'
-                    : 'hover:bg-[#FAF8F5] active:bg-[#FAF8F5]'
-                }`}
-              >
-                <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 border transition-colors mt-0.5 ${
-                  isActive
-                    ? 'bg-[#8B7CF6] text-white border-[#7868E8]'
-                    : 'bg-[#EDE9FE] text-[#6D28D9] border-[#DDD6FE]'
-                }`}>
-                  <Users className="w-4 h-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline justify-between mb-0.5">
-                    <span className="text-xs font-semibold text-[#24212B] truncate">
-                      {conv.title}
-                    </span>
-                    {conv.last_message && (
-                      <span className="text-[10px] tabular-nums text-[#827D8B] shrink-0 ml-2">
-                        {formatMessageTime(conv.last_message.created_at)}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-[#827D8B] truncate">
-                    {conv.last_message ? (
-                      conv.last_message.deleted_at ? (
-                        <span className="italic">Message deleted</span>
-                      ) : (
-                        <span>
-                          {conv.last_message.sender_name ? `${conv.last_message.sender_name}: ` : ''}
-                          {conv.last_message.content || 'Attached file'}
-                        </span>
-                      )
-                    ) : (
-                      'No messages yet'
-                    )}
-                  </p>
-                </div>
-                {conv.unread_count && conv.unread_count > 0 ? (
-                  <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#8B7CF6] text-white text-[10px] font-bold flex items-center justify-center shrink-0 self-center">
-                    {conv.unread_count}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Direct Conversations Section */}
-        <div className="py-2.5">
-          <div className="px-4 py-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-[#827D8B]">
-            <span>Direct Chats</span>
-            <span className="tabular-nums font-mono text-[10px] text-[#8B7CF6] bg-[#F0ECFF] px-1.5 py-0.5 rounded-full font-semibold">
-              {directConversations.length}
-            </span>
-          </div>
-
-          {filteredDirects.length > 0 ? (
-            filteredDirects.map((conv) => {
+        {/* Collective (Group) Chat Section */}
+        {(channelScope === 'all' || channelScope === 'collective') && (
+          <div className="py-2.5">
+            <div className="px-4 py-1.5 flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#6D28D9] flex items-center gap-1.5">
+                <Users className="w-3 h-3" />
+                The Collective Circle
+              </span>
+              <span className="text-[10px] text-[#827D8B] bg-[#EDE9FE] text-[#6D28D9] px-2 py-0.5 rounded-full font-medium">
+                Group
+              </span>
+            </div>
+            {filteredGroups.map((conv) => {
               const isActive = conv.id === activeConversationId;
-              const directPalette = getMemberAvatarPalette(conv.title);
               return (
                 <button
                   key={conv.id}
                   type="button"
                   onClick={() => onSelectConversation(conv.id)}
-                  className={`w-full px-4 py-2.5 text-left flex items-start gap-3 transition-all cursor-pointer min-h-[52px] ${
+                  className={`w-full px-4 py-2.5 text-left flex items-start gap-3 transition-all cursor-pointer min-h-[56px] ${
                     isActive
                       ? 'bg-[#F0ECFF] border-l-[3px] border-l-[#8B7CF6]'
                       : 'hover:bg-[#FAF8F5] active:bg-[#FAF8F5]'
                   }`}
                 >
-                  <div
-                    className="w-8 h-8 rounded-xl text-xs font-semibold flex items-center justify-center shrink-0 uppercase border shadow-2xs mt-0.5"
-                    style={{
-                      backgroundColor: directPalette.bg,
-                      color: directPalette.text,
-                      borderColor: directPalette.border
-                    }}
-                  >
-                    {conv.title.charAt(0)}
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border transition-colors mt-0.5 ${
+                    isActive
+                      ? 'bg-[#8B7CF6] text-white border-[#7868E8]'
+                      : 'bg-[#EDE9FE] text-[#6D28D9] border-[#DDD6FE]'
+                  }`}>
+                    <Users className="w-4 h-4" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline justify-between mb-0.5">
-                      <span className="text-xs font-semibold text-[#24212B] truncate">
+                      <span className="text-xs font-bold text-[#24212B] truncate">
                         {conv.title}
                       </span>
                       {conv.last_message && (
@@ -367,10 +357,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         conv.last_message.deleted_at ? (
                           <span className="italic">Message deleted</span>
                         ) : (
-                          conv.last_message.content || 'Attached file'
+                          <span>
+                            {conv.last_message.sender_name ? `${conv.last_message.sender_name}: ` : ''}
+                            {conv.last_message.content || 'Attached file'}
+                          </span>
                         )
                       ) : (
-                        'Started a direct chat'
+                        'Shared circle room for everyone'
                       )}
                     </p>
                   </div>
@@ -381,89 +374,165 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   ) : null}
                 </button>
               );
-            })
-          ) : (
-            <div className="px-4 py-3 text-xs text-[#827D8B]">
-              No 1-on-1 chats yet. Tap any friend below to start.
-            </div>
-          )}
-        </div>
-
-        {/* Discoverable Friends */}
-        <div className="py-2.5">
-          <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#827D8B]">
-            Friends ({otherMembers.length})
+            })}
           </div>
+        )}
 
-          {filteredOtherMembers.length > 0 ? (
-            <div className="space-y-0.5">
-              {filteredOtherMembers.map((member) => {
-                const pal = getMemberAvatarPalette(member.avatar_color || member.id || member.display_name);
+        {/* Personal Direct Conversations Section */}
+        {(channelScope === 'all' || channelScope === 'personal') && (
+          <div className="py-2.5">
+            <div className="px-4 py-1.5 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#0369A1]">
+              <span className="flex items-center gap-1.5">
+                <User className="w-3 h-3" />
+                Personal / Direct Chats
+              </span>
+              <span className="tabular-nums font-mono text-[10px] text-[#0369A1] bg-[#E0F2FE] px-2 py-0.5 rounded-full font-semibold">
+                {directConversations.length}
+              </span>
+            </div>
+
+            {filteredDirects.length > 0 ? (
+              filteredDirects.map((conv) => {
+                const isActive = conv.id === activeConversationId;
+                const directPalette = getMemberAvatarPalette(conv.title);
                 return (
-                  <div
-                    key={member.id}
-                    className="w-full px-4 py-2 flex items-center justify-between hover:bg-[#FAF8F5] transition-colors rounded-lg group"
+                  <button
+                    key={conv.id}
+                    type="button"
+                    onClick={() => onSelectConversation(conv.id)}
+                    className={`w-full px-4 py-2.5 text-left flex items-start gap-3 transition-all cursor-pointer min-h-[56px] ${
+                      isActive
+                        ? 'bg-[#E0F2FE]/50 border-l-[3px] border-l-[#0284C7]'
+                        : 'hover:bg-[#FAF8F5] active:bg-[#FAF8F5]'
+                    }`}
                   >
                     <div
-                      className="flex items-center gap-2.5 min-w-0 cursor-pointer flex-1"
-                      onClick={() => onOpenFriendProfile ? onOpenFriendProfile(member) : onStartDirectChat(member)}
+                      className="w-9 h-9 rounded-xl text-xs font-semibold flex items-center justify-center shrink-0 uppercase border shadow-2xs mt-0.5"
+                      style={{
+                        backgroundColor: directPalette.bg,
+                        color: directPalette.text,
+                        borderColor: directPalette.border
+                      }}
                     >
-                      <div className="relative shrink-0">
-                        {member.avatar_url ? (
-                          <img
-                            src={member.avatar_url}
-                            alt={member.display_name}
-                            className="w-7 h-7 rounded-xl object-cover border shadow-2xs"
-                          />
-                        ) : (
-                          <div
-                            className="w-7 h-7 rounded-xl text-xs font-semibold flex items-center justify-center uppercase border shadow-2xs"
-                            style={{
-                              backgroundColor: pal.bg,
-                              color: pal.text,
-                              borderColor: pal.border
-                            }}
-                          >
-                            {member.display_name.charAt(0)}
-                          </div>
-                        )}
-                        {member.is_online && (
-                          <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-1 ring-white" />
+                      {conv.title.charAt(0)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline justify-between mb-0.5">
+                        <span className="text-xs font-semibold text-[#24212B] truncate">
+                          {conv.title}
+                        </span>
+                        {conv.last_message && (
+                          <span className="text-[10px] tabular-nums text-[#827D8B] shrink-0 ml-2">
+                            {formatMessageTime(conv.last_message.created_at)}
+                          </span>
                         )}
                       </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-semibold text-[#24212B] truncate flex items-center gap-1">
-                          <span>{member.display_name}</span>
-                          {member.nickname && (
-                            <span className="text-[10px] font-normal text-[#827D8B]">
-                              @{member.nickname}
-                            </span>
+                      <p className="text-xs text-[#827D8B] truncate">
+                        {conv.last_message ? (
+                          conv.last_message.deleted_at ? (
+                            <span className="italic">Message deleted</span>
+                          ) : (
+                            conv.last_message.content || 'Attached file'
+                          )
+                        ) : (
+                          '1-on-1 private conversation'
+                        )}
+                      </p>
+                    </div>
+                    {conv.unread_count && conv.unread_count > 0 ? (
+                      <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#0284C7] text-white text-[10px] font-bold flex items-center justify-center shrink-0 self-center">
+                        {conv.unread_count}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })
+            ) : (
+              <div className="px-4 py-3 text-xs text-[#827D8B]">
+                No 1-on-1 personal chats yet. Tap any friend below to start messaging privately.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Discoverable Friends (Personal Direct Chat Initiator) */}
+        {(channelScope === 'all' || channelScope === 'personal') && (
+          <div className="py-2.5">
+            <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#827D8B] flex items-center justify-between">
+              <span>Friends Directory ({otherMembers.length})</span>
+              <span className="text-[9px] text-[#827D8B]">Tap to DM</span>
+            </div>
+
+            {filteredOtherMembers.length > 0 ? (
+              <div className="space-y-0.5 mt-1">
+                {filteredOtherMembers.map((member) => {
+                  const pal = getMemberAvatarPalette(member.avatar_color || member.id || member.display_name);
+                  return (
+                    <div
+                      key={member.id}
+                      className="w-full px-4 py-2 flex items-center justify-between hover:bg-[#FAF8F5] transition-colors rounded-lg group"
+                    >
+                      <div
+                        className="flex items-center gap-2.5 min-w-0 cursor-pointer flex-1"
+                        onClick={() => onOpenFriendProfile ? onOpenFriendProfile(member) : onStartDirectChat(member)}
+                      >
+                        <div className="relative shrink-0">
+                          {member.avatar_url ? (
+                            <img
+                              src={member.avatar_url}
+                              alt={member.display_name}
+                              className="w-8 h-8 rounded-xl object-cover border shadow-2xs"
+                            />
+                          ) : (
+                            <div
+                              className="w-8 h-8 rounded-xl text-xs font-semibold flex items-center justify-center uppercase border shadow-2xs"
+                              style={{
+                                backgroundColor: pal.bg,
+                                color: pal.text,
+                                borderColor: pal.border
+                              }}
+                            >
+                              {member.display_name.charAt(0)}
+                            </div>
+                          )}
+                          {member.is_online && (
+                            <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-1 ring-white" />
                           )}
                         </div>
-                        <div className="text-[10px] text-[#827D8B] truncate">
-                          {member.status_text || (member.is_online ? 'Active now' : 'Offline')}
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold text-[#24212B] truncate flex items-center gap-1">
+                            <span>{member.display_name}</span>
+                            {member.nickname && (
+                              <span className="text-[10px] font-normal text-[#827D8B]">
+                                @{member.nickname}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-[#827D8B] truncate">
+                            {member.status_text || (member.is_online ? 'Active now' : 'Offline')}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <button
-                      type="button"
-                      onClick={() => onStartDirectChat(member)}
-                      title={`Message ${member.display_name}`}
-                      className="min-w-[32px] min-h-[32px] flex items-center justify-center text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] rounded-lg transition-colors cursor-pointer shrink-0"
-                    >
-                      <MessageSquarePlus className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="px-4 py-3 text-xs text-[#827D8B] leading-relaxed">
-              No other friends yet. As friends join your messenger, they will appear here.
-            </div>
-          )}
-        </div>
+                      <button
+                        type="button"
+                        onClick={() => onStartDirectChat(member)}
+                        title={`Send private message to ${member.display_name}`}
+                        className="min-w-[32px] min-h-[32px] flex items-center justify-center text-[#827D8B] hover:text-[#0284C7] hover:bg-[#E0F2FE] rounded-lg transition-colors cursor-pointer shrink-0"
+                      >
+                        <MessageSquarePlus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="px-4 py-3 text-xs text-[#827D8B] leading-relaxed">
+                No other friends yet. As friends join your messenger, they will appear here.
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </aside>
   );

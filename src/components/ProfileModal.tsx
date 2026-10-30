@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Check, EyeOff, Smile, Palette, Sparkles, User, Image as ImageIcon } from 'lucide-react';
 import { Member } from '../types';
 import { getMemberAvatarPalette } from '../utils/avatarUtils';
+import { AvatarSelector } from './AvatarSelector';
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -251,18 +252,17 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             </div>
           </div>
 
-          {/* Optional Avatar Image URL */}
+          {/* Avatar Selector (Computer Upload & Gallery Presets) */}
           <div>
-            <label className="block text-xs font-semibold text-[#24212B] mb-1 flex items-center gap-1.5">
-              <ImageIcon className="w-3.5 h-3.5 text-[#827D8B]" />
-              <span>Avatar Image URL <span className="text-[10px] text-[#827D8B] font-normal">(optional)</span></span>
+            <label className="block text-xs font-semibold text-[#24212B] mb-2 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-[#8B7CF6]" />
+              <span>Profile Avatar</span>
             </label>
-            <input
-              type="url"
-              value={avatarUrl}
-              onChange={(e) => setAvatarUrl(e.target.value)}
-              placeholder="https://example.com/photo.jpg"
-              className="w-full h-9 px-3 text-xs bg-white border border-[#EAE5E0] rounded-xl text-[#24212B] focus:outline-none focus:border-[#8B7CF6] focus:ring-1 focus:ring-[#8B7CF6]/30"
+            <AvatarSelector
+              currentAvatarUrl={avatarUrl}
+              displayName={displayName}
+              avatarColor={avatarColor}
+              onAvatarChange={(newUrl) => setAvatarUrl(newUrl)}
             />
           </div>
 

@@ -268,8 +268,12 @@ export default function App() {
   };
 
   // Entry screen submit
-  const handleEnterApp = async (displayName: string, existingId?: string) => {
-    const member = await ChatEngine.setCurrentMember(displayName, existingId);
+  const handleEnterApp = async (
+    displayName: string,
+    existingId?: string,
+    initialProfile?: Partial<Member>
+  ) => {
+    const member = await ChatEngine.setCurrentMember(displayName, existingId, initialProfile);
     setCurrentMember(member);
     refreshData();
   };
