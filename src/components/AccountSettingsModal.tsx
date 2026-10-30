@@ -17,10 +17,15 @@ import {
   ExternalLink,
   KeyRound,
   Link2,
-  Unlink
+  Unlink,
+  Camera,
+  Upload,
+  Trash2,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Member } from '../types';
 import { getMemberAvatarPalette } from '../utils/avatarUtils';
+import { ChatEngine } from '../lib/chatEngine';
 import {
   getCurrentAuthUser,
   getAuthIdentities,
@@ -126,6 +131,33 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
   }, [isOpen, currentMember]);
 
   const currentPalette = getMemberAvatarPalette(avatarColor);
+
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [avatarUploadError, setAvatarUploadError] = useState<string | null>(null);
+
+  const handleAvatarFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setAvatarUploadError('Please select an image file (PNG, JPG, WebP).');
+      return;
+    }
+
+    setAvatarUploadError(null);
+    setIsUploadingAvatar(true);
+
+    try {
+      const url = await ChatEngine.uploadAvatar(file);
+      setAvatarUrl(url);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to upload photo.';
+      setAvatarUploadError(msg);
+    } finally {
+      setIsUploadingAvatar(false);
+      e.target.value = '';
+    }
+  };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -305,29 +337,46 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
           {/* TAB 1: PROFILE */}
           {activeTab === 'profile' && (
             <form onSubmit={handleSaveProfile} className="space-y-5">
-              {/* Live Avatar Preview */}
-              <div className="flex items-center gap-4 p-4 bg-white border border-[#EAE5E0] rounded-2xl shadow-2xs">
-                <div
-                  className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold border transition-all shrink-0"
-                  style={{
-                    backgroundColor: currentPalette.bg,
-                    borderColor: currentPalette.border,
-                    color: currentPalette.text
-                  }}
-                >
-                  {avatarUrl ? (
-                    <img
-                      src={avatarUrl}
-                      alt={displayName}
-                      className="w-full h-full object-cover rounded-2xl"
-                      onError={() => setAvatarUrl('')}
-                    />
-                  ) : (
-                    displayName.charAt(0).toUpperCase() || '?'
-                  )}
+              {/* Live Avatar Preview & Gallery Upload */}
+              <div className="flex flex-col sm:flex-row items-center gap-4 p-4 bg-white border border-[#EAE5E0] rounded-2xl shadow-2xs">
+                <div className="relative group shrink-0">
+                  <div
+                    className="w-16 h-16 rounded-2xl flex items-center justify-center text-2xl font-bold border transition-all overflow-hidden"
+                    style={{
+                      backgroundColor: currentPalette.bg,
+                      borderColor: currentPalette.border,
+                      color: currentPalette.text
+                    }}
+                  >
+                    {avatarUrl ? (
+                      <img
+                        src={avatarUrl}
+                        alt={displayName}
+                        className="w-full h-full object-cover rounded-2xl"
+                        onError={() => setAvatarUrl('')}
+                      />
+                    ) : (
+                      displayName.charAt(0).toUpperCase() || '?'
+                    )}
+                  </div>
+                  <label
+                    htmlFor="avatar-gallery-input"
+                    title="Change avatar photo"
+                    className="absolute -bottom-1 -right-1 w-7 h-7 bg-[#8B7CF6] hover:bg-[#7C6BF5] text-white rounded-xl flex items-center justify-center shadow-xs cursor-pointer transition-transform hover:scale-110"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                  </label>
+                  <input
+                    id="avatar-gallery-input"
+                    type="file"
+                    accept="image/*"
+                    onChange={handleAvatarFileUpload}
+                    className="hidden"
+                  />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+
+                <div className="flex-1 min-w-0 text-center sm:text-left space-y-1">
+                  <div className="flex items-center justify-center sm:justify-start gap-2">
                     <span className="text-sm font-bold text-[#24212B] truncate">{displayName || 'Anonymous'}</span>
                     {currentMember.username && (
                       <span className="text-[11px] font-mono px-2 py-0.5 bg-[#F5F2EB] text-[#827D8B] rounded-md">
@@ -335,9 +384,35 @@ export const AccountSettingsModal: React.FC<AccountSettingsModalProps> = ({
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-[#827D8B] mt-0.5 truncate">
-                    {statusText || 'No status set'}
-                  </p>
+
+                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1">
+                    <label
+                      htmlFor="avatar-gallery-input"
+                      className="px-3 py-1.5 bg-[#F0ECFF] hover:bg-[#E4DCFF] text-[#6D28D9] border border-[#DDD6FE] text-xs font-semibold rounded-xl cursor-pointer transition-colors flex items-center gap-1.5"
+                    >
+                      {isUploadingAvatar ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Upload className="w-3.5 h-3.5" />
+                      )}
+                      <span>Upload from Gallery</span>
+                    </label>
+
+                    {avatarUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setAvatarUrl('')}
+                        className="px-2.5 py-1.5 text-rose-600 hover:bg-rose-50 border border-rose-200 text-xs font-medium rounded-xl transition-colors flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Remove Photo</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {avatarUploadError && (
+                    <p className="text-[11px] text-rose-600 pt-0.5">{avatarUploadError}</p>
+                  )}
                 </div>
               </div>
 

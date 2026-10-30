@@ -14,7 +14,8 @@ import {
   MoreHorizontal,
   X,
   CornerUpRight,
-  Heart
+  Heart,
+  Smile
 } from 'lucide-react';
 import { Message, Attachment, Member } from '../types';
 import { formatMessageTime } from '../utils/messageGrouping';
@@ -377,7 +378,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                 )}
 
                 {/* Reactions Row */}
-                {Object.keys(reactionMap).length > 0 && !isDeleted && (
+                {!isDeleted && (
                   <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
                     {Object.entries(reactionMap).map(([emoji, userIds]) => {
                       const userReacted = userIds.includes(currentMember.id);
@@ -397,6 +398,16 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                         </button>
                       );
                     })}
+
+                    <button
+                      type="button"
+                      onClick={() => setShowMobileActionSheet(true)}
+                      title="Add reaction"
+                      aria-label="Add reaction to message"
+                      className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] border border-dashed border-[#DDD6FE] bg-white hover:bg-[#F0ECFF] text-[#8B7CF6] transition-all cursor-pointer shadow-2xs"
+                    >
+                      <Smile className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 )}
               </div>

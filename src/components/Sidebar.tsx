@@ -42,7 +42,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
-  const groupConversations = conversations.filter(c => c.type === 'group');
+  const groupConversations = conversations.filter(c =>
+    c.type === 'group' &&
+    !c.title?.startsWith('__') &&
+    !c.title?.toLowerCase().includes('registry')
+  );
   const directConversations = conversations.filter(c => c.type === 'direct');
 
   const filteredGroups = groupConversations.filter(c =>

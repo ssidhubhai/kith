@@ -625,6 +625,12 @@ export async function signInWithIdentifier(
     });
 
     if (error) {
+      if (error.message?.toLowerCase().includes('email not confirmed')) {
+        return {
+          success: false,
+          error: 'Email confirmation is enabled in your Supabase project. To enable instant username sign-in: Go to Supabase Dashboard -> Authentication -> Providers -> Email -> Turn OFF "Confirm email".'
+        };
+      }
       return { success: false, error: error.message };
     }
 

@@ -186,7 +186,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   return (
     <main
       aria-label="Chat conversation view"
-      style={viewportHeight ? { height: `${viewportHeight}px` } : undefined}
       className="flex-1 flex flex-col h-full bg-[#FAF8F5] relative overflow-hidden min-w-0"
     >
       {/* Network / Connection status banner */}

@@ -661,6 +661,11 @@ export class ChatEngine {
         if (!error && convs) {
           const list: Conversation[] = [];
           for (const c of convs) {
+            // Exclude internal system or registry rooms
+            if (c.title?.startsWith('__') || c.title?.toLowerCase().includes('registry')) {
+              continue;
+            }
+
             const memberIds = (c.conversation_members || []).map((cm: { member_id: string }) => cm.member_id);
             if (c.type === 'group' || memberIds.includes(memberId)) {
               // Fetch latest message
@@ -1333,14 +1338,18 @@ export class ChatEngine {
 
       if (supabase && !isLocalModeExplicitlyEnabled()) {
         try {
-          await supabase.from('message_reactions').insert({
+          await this.upsertMemberRecord(current);
+          const { error: rxErr } = await supabase.from('message_reactions').insert({
             id: reaction.id,
             message_id: messageId,
             member_id: current.id,
             emoji
           });
+          if (rxErr) {
+            console.error('[Kith] Supabase reaction insert error:', rxErr);
+          }
         } catch (err) {
-          console.error('[Kith] Supabase reaction insert error:', err);
+          console.error('[Kith] Supabase reaction insert exception:', err);
         }
       }
     }

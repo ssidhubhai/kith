@@ -260,22 +260,30 @@ export default function App() {
         onReaction: (reaction, action) => {
           setMessages((prev) =>
             prev.map((msg) => {
-              if (msg.id !== reaction.message_id) return msg;
               const currentReactions = msg.reactions || [];
               if (action === 'insert') {
+                if (msg.id !== reaction.message_id) return msg;
                 if (
                   currentReactions.some(
-                    (r) => r.member_id === reaction.member_id && r.emoji === reaction.emoji
+                    (r) => (reaction.id && r.id === reaction.id) || (r.member_id === reaction.member_id && r.emoji === reaction.emoji)
                   )
                 ) {
                   return msg;
                 }
                 return { ...msg, reactions: [...currentReactions, reaction] };
               } else {
+                // Delete action: reaction might match by id OR by (message_id, member_id, emoji)
+                const isTargetMsg = reaction.message_id ? msg.id === reaction.message_id : currentReactions.some((r) => r.id === reaction.id);
+                if (!isTargetMsg) return msg;
+
                 return {
                   ...msg,
                   reactions: currentReactions.filter(
-                    (r) => !(r.member_id === reaction.member_id && r.emoji === reaction.emoji)
+                    (r) =>
+                      !(
+                        (reaction.id && r.id === reaction.id) ||
+                        (r.member_id === reaction.member_id && r.emoji === reaction.emoji)
+                      )
                   )
                 };
               }
@@ -473,7 +481,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-[100dvh] w-full overflow-hidden bg-[#FAF8F5] text-[#24212B] font-sans antialiased">
+    <div className="fixed inset-0 flex h-[100dvh] w-full overflow-hidden bg-[#FAF8F5] text-[#24212B] font-sans antialiased">
       {/* Sidebar (Desktop always visible, Mobile conditionally visible) */}
       <div
         className={`${
