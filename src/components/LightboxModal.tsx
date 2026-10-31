@@ -1,6 +1,7 @@
-import React, { useEffect } from 'react';
-import { X, Download, ExternalLink } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { X, Download, ExternalLink, Loader2, Check } from 'lucide-react';
 import { Attachment } from '../types';
+import { downloadAttachmentFile } from '../utils/fileDownload';
 
 interface LightboxModalProps {
   attachment: Attachment | null;
@@ -8,6 +9,9 @@ interface LightboxModalProps {
 }
 
 export const LightboxModal: React.FC<LightboxModalProps> = ({ attachment, onClose }) => {
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isDownloaded, setIsDownloaded] = useState(false);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -23,6 +27,20 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({ attachment, onClos
   if (!attachment) return null;
 
   const url = attachment.download_url || '';
+
+  const handleDownload = async () => {
+    if (isDownloading || !url) return;
+    setIsDownloading(true);
+    try {
+      const res = await downloadAttachmentFile(url, attachment.original_filename);
+      if (res.success) {
+        setIsDownloaded(true);
+        setTimeout(() => setIsDownloaded(false), 2500);
+      }
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   return (
     <div
@@ -44,17 +62,24 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({ attachment, onClos
         </div>
 
         <div className="flex items-center gap-3">
-          <a
-            href={url}
-            download={attachment.original_filename}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="Download image"
-            className="p-2 rounded hover:bg-white/10 text-white/80 hover:text-white transition-colors"
-          >
-            <Download className="w-4 h-4" />
-          </a>
           <button
+            type="button"
+            onClick={handleDownload}
+            disabled={isDownloading}
+            aria-label={`Download ${attachment.original_filename} to device`}
+            title="Download to device"
+            className="p-2 rounded hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer"
+          >
+            {isDownloading ? (
+              <Loader2 className="w-4 h-4 animate-spin text-[#8B7CF6]" />
+            ) : isDownloaded ? (
+              <Check className="w-4 h-4 text-emerald-400" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+          </button>
+          <button
+            type="button"
             onClick={onClose}
             aria-label="Close image lightbox"
             className="p-2 rounded hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer"
@@ -63,6 +88,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({ attachment, onClos
           </button>
         </div>
       </div>
+
 
       {/* Media container */}
       <div

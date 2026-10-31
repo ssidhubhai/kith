@@ -25,6 +25,7 @@ import {
   isInternalEmail,
   deriveUsernameFromGoogle
 } from './authValidation';
+import { prepareDownloadUrl } from './fileDownload';
 
 
 test('fileValidation - sanitizes malicious and path traversal filenames', () => {
@@ -301,4 +302,22 @@ test('directConversation - resolves recipient display title correctly', () => {
 
   assert.equal(displayTitle, 'Bob');
 });
+
+test('fileDownload - prepareDownloadUrl appends download param for cloud storage', () => {
+  // Standard Supabase storage URL
+  const supabaseUrl = 'https://abc.supabase.co/storage/v1/object/public/kith_attachments/doc.pdf';
+  const prepared = prepareDownloadUrl(supabaseUrl, 'annual-report.pdf');
+  assert.equal(prepared.includes('download=annual-report.pdf'), true);
+
+  // URL already having search params
+  const queryUrl = 'https://abc.supabase.co/storage/v1/object/public/kith_attachments/doc.pdf?version=2';
+  const preparedQuery = prepareDownloadUrl(queryUrl, 'invoice #123.pdf');
+  assert.equal(preparedQuery.includes('download=invoice__123.pdf'), true);
+  assert.equal(preparedQuery.includes('version=2'), true);
+
+  // Blob and Data URLs should remain untouched
+  assert.equal(prepareDownloadUrl('blob:http://localhost:3000/123-abc', 'test.pdf'), 'blob:http://localhost:3000/123-abc');
+  assert.equal(prepareDownloadUrl('data:text/plain;base64,AAA', 'test.txt'), 'data:text/plain;base64,AAA');
+});
+
 

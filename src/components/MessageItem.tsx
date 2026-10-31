@@ -15,12 +15,14 @@ import {
   X,
   CornerUpRight,
   Heart,
-  Smile
+  Smile,
+  Loader2
 } from 'lucide-react';
 import { Message, Attachment, Member } from '../types';
 import { formatMessageTime } from '../utils/messageGrouping';
 import { formatFileSize, getFileCategory } from '../utils/fileValidation';
 import { getMemberAvatarPalette } from '../utils/avatarUtils';
+import { downloadAttachmentFile } from '../utils/fileDownload';
 
 interface MessageItemProps {
   message: Message;
@@ -57,6 +59,25 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const [showMobileActionSheet, setShowMobileActionSheet] = useState(false);
   const [showDoubleTapHeart, setShowDoubleTapHeart] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadedId, setDownloadedId] = useState<string | null>(null);
+
+  const handleDownloadAttachment = async (e: React.MouseEvent, att: Attachment) => {
+    e.stopPropagation();
+    if (downloadingId === att.id) return;
+    setDownloadingId(att.id);
+    try {
+      const res = await downloadAttachmentFile(att.download_url || '', att.original_filename);
+      if (res.success) {
+        setDownloadedId(att.id);
+        setTimeout(() => {
+          setDownloadedId((prev) => (prev === att.id ? null : prev));
+        }, 2500);
+      }
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastTapTimeRef = useRef<number>(0);
@@ -334,43 +355,92 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                       }
 
                       if (isAudio) {
+                        const isAudioDownloading = downloadingId === att.id;
+                        const isAudioDownloaded = downloadedId === att.id;
+
                         return (
                           <div key={att.id} className="p-3 border border-[#EAE5E0] bg-white rounded-xl max-w-full sm:max-w-md shadow-2xs">
                             <audio src={att.download_url} controls className="w-full h-8" />
-                            <div className="mt-1.5 text-[11px] text-[#827D8B] truncate">
-                              {att.original_filename} ({formatFileSize(att.file_size)})
+                            <div className="mt-1.5 flex items-center justify-between text-[11px] text-[#827D8B]">
+                              <span className="truncate mr-2">{att.original_filename} ({formatFileSize(att.file_size)})</span>
+                              <button
+                                type="button"
+                                onClick={(e) => handleDownloadAttachment(e, att)}
+                                disabled={isAudioDownloading}
+                                title={`Download ${att.original_filename} to device`}
+                                aria-label={`Download ${att.original_filename} to device`}
+                                className="p-1 text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] rounded transition-colors cursor-pointer shrink-0"
+                              >
+                                {isAudioDownloading ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#8B7CF6]" />
+                                ) : isAudioDownloaded ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                ) : (
+                                  <Download className="w-3.5 h-3.5" />
+                                )}
+                              </button>
                             </div>
                           </div>
                         );
                       }
 
                       // Document Card
+                      const isDocDownloading = downloadingId === att.id;
+                      const isDocDownloaded = downloadedId === att.id;
+
                       return (
                         <div
                           key={att.id}
-                          className="flex items-center gap-2.5 p-2.5 sm:p-3 border border-[#EAE5E0] bg-white hover:border-[#8B7CF6] rounded-xl transition-all max-w-full sm:max-w-sm shadow-2xs"
+                          onClick={(e) => handleDownloadAttachment(e, att)}
+                          className="flex items-center gap-2.5 p-2.5 sm:p-3 border border-[#EAE5E0] bg-white hover:border-[#8B7CF6] rounded-xl transition-all max-w-full sm:max-w-sm shadow-2xs cursor-pointer group active:scale-[0.99]"
+                          title={`Tap to download ${att.original_filename} to device`}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleDownloadAttachment(e as unknown as React.MouseEvent, att);
+                            }
+                          }}
                         >
-                          <div className="p-2 sm:p-2.5 bg-[#F0ECFF] border border-[#DDD6FE] rounded-lg shrink-0">
+                          <div className="p-2 sm:p-2.5 bg-[#F0ECFF] border border-[#DDD6FE] rounded-lg shrink-0 group-hover:scale-105 transition-transform">
                             {renderAttachmentIcon(att)}
                           </div>
                           <div className="min-w-0 flex-1">
-                            <div className="text-xs font-semibold text-[#24212B] truncate" title={att.original_filename}>
+                            <div className="text-xs font-semibold text-[#24212B] truncate group-hover:text-[#6D28D9] transition-colors" title={att.original_filename}>
                               {att.original_filename}
                             </div>
-                            <div className="text-[10px] tabular-nums text-[#827D8B]">
-                              {formatFileSize(att.file_size)}
+                            <div className="flex items-center gap-2 text-[10px] text-[#827D8B]">
+                              <span className="tabular-nums">{formatFileSize(att.file_size)}</span>
+                              {isDocDownloading && (
+                                <span className="text-[#8B7CF6] font-medium animate-pulse">Saving to device...</span>
+                              )}
+                              {isDocDownloaded && (
+                                <span className="text-emerald-600 font-medium flex items-center gap-0.5">
+                                  <Check className="w-3 h-3" /> Downloaded
+                                </span>
+                              )}
                             </div>
                           </div>
-                          <a
-                            href={att.download_url}
-                            download={att.original_filename}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            aria-label={`Download ${att.original_filename}`}
-                            className="p-2 text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] rounded-lg transition-colors shrink-0"
+                          <button
+                            type="button"
+                            onClick={(e) => handleDownloadAttachment(e, att)}
+                            disabled={isDocDownloading}
+                            aria-label={`Download ${att.original_filename} to device`}
+                            className={`p-2 rounded-lg transition-colors shrink-0 cursor-pointer ${
+                              isDocDownloaded
+                                ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                                : 'text-[#827D8B] group-hover:text-[#8B7CF6] group-hover:bg-[#F0ECFF]'
+                            }`}
                           >
-                            <Download className="w-4 h-4" />
-                          </a>
+                            {isDocDownloading ? (
+                              <Loader2 className="w-4 h-4 animate-spin text-[#8B7CF6]" />
+                            ) : isDocDownloaded ? (
+                              <Check className="w-4 h-4 text-emerald-600" />
+                            ) : (
+                              <Download className="w-4 h-4" />
+                            )}
+                          </button>
                         </div>
                       );
                     })}
