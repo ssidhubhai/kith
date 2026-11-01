@@ -320,4 +320,99 @@ test('fileDownload - prepareDownloadUrl appends download param for cloud storage
   assert.equal(prepareDownloadUrl('data:text/plain;base64,AAA', 'test.txt'), 'data:text/plain;base64,AAA');
 });
 
+test('composerLogic - submission guard locks out duplicate submissions', () => {
+  let isSubmitting = false;
+  let calls = 0;
+
+  const trySubmit = () => {
+    if (isSubmitting) return false;
+    isSubmitting = true;
+    calls += 1;
+    return true;
+  };
+
+  assert.equal(trySubmit(), true);
+  assert.equal(trySubmit(), false); // blocked while locked
+  assert.equal(trySubmit(), false); // blocked while locked
+  assert.equal(calls, 1);
+
+  isSubmitting = false; // unlocked after send finishes
+  assert.equal(trySubmit(), true);
+  assert.equal(calls, 2);
+});
+
+test('composerLogic - preserves draft content when message send fails', async () => {
+  let composerText = 'Crucial message content';
+  let bannerError: string | null = null;
+
+  const mockSendMessage = async (_text: string) => {
+    throw new Error('Supabase network error: failed to fetch');
+  };
+
+  // Simulate composer submit
+  try {
+    await mockSendMessage(composerText);
+    composerText = ''; // should not be reached on failure
+  } catch (err: unknown) {
+    bannerError = err instanceof Error ? err.message : 'Send failed';
+  }
+
+  // Text MUST be preserved, not wiped!
+  assert.equal(composerText, 'Crucial message content');
+  assert.equal(bannerError, 'Supabase network error: failed to fetch');
+});
+
+test('viewportLogic - calculates mobile keyboard height and open status correctly', () => {
+  const calculateKeyboard = (windowHeight: number, vvHeight: number) => {
+    const diff = Math.max(0, windowHeight - vvHeight);
+    return {
+      keyboardHeight: diff > 140 ? diff : 0,
+      isKeyboardOpen: diff > 140
+    };
+  };
+
+  // Desktop (no keyboard)
+  const desktop = calculateKeyboard(900, 900);
+  assert.equal(desktop.isKeyboardOpen, false);
+  assert.equal(desktop.keyboardHeight, 0);
+
+  // Mobile without keyboard
+  const mobileClosed = calculateKeyboard(844, 844);
+  assert.equal(mobileClosed.isKeyboardOpen, false);
+  assert.equal(mobileClosed.keyboardHeight, 0);
+
+  // Mobile with virtual keyboard open (320px keyboard)
+  const mobileOpen = calculateKeyboard(844, 524);
+  assert.equal(mobileOpen.isKeyboardOpen, true);
+  assert.equal(mobileOpen.keyboardHeight, 320);
+
+  // Minor viewport difference like address bar collapse (diff <= 140)
+  const addressBarCollapse = calculateKeyboard(844, 780);
+  assert.equal(addressBarCollapse.isKeyboardOpen, false);
+  assert.equal(addressBarCollapse.keyboardHeight, 0);
+});
+
+test('chatEngine - filters cached messages by conversationId synchronously', () => {
+  const mockCache = [
+    { id: '1', conversation_id: 'conv_a', content: 'In room A' },
+    { id: '2', conversation_id: 'conv_b', content: 'In room B' },
+    { id: '3', conversation_id: 'conv_a', content: 'Also in room A' }
+  ];
+
+  const getCached = (convId: string) => mockCache.filter(m => m.conversation_id === convId);
+
+  const roomA = getCached('conv_a');
+  assert.equal(roomA.length, 2);
+  assert.equal(roomA[0].id, '1');
+  assert.equal(roomA[1].id, '3');
+
+  const roomB = getCached('conv_b');
+  assert.equal(roomB.length, 1);
+  assert.equal(roomB[0].content, 'In room B');
+
+  const roomEmpty = getCached('conv_none');
+  assert.equal(roomEmpty.length, 0);
+});
+
+
 

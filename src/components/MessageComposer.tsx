@@ -21,6 +21,7 @@ interface MessageComposerProps {
   onTyping: () => void;
   draft?: string;
   onDraftChange?: (draft: string) => void;
+  isKeyboardOpen?: boolean;
 }
 
 interface QueuedUpload {
@@ -31,14 +32,15 @@ interface QueuedUpload {
   error?: string;
 }
 
-export const MessageComposer: React.FC<MessageComposerProps> = ({
+export const MessageComposer: React.FC<MessageComposerProps> = React.memo(({
   conversationId,
   onSendMessage,
   replyingTo,
   onCancelReply,
   onTyping,
   draft = '',
-  onDraftChange
+  onDraftChange,
+  isKeyboardOpen = false
 }) => {
   const [content, setContent] = useState(draft);
   const [queuedUploads, setQueuedUploads] = useState<QueuedUpload[]>([]);
@@ -49,16 +51,35 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isSubmittingRef = useRef(false);
+  const prevConvIdRef = useRef(conversationId);
+  const suppressInputUntilRef = useRef<number>(0);
+  const draftTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Sync draft when conversation changes
+  // Clean up draft debouncer on unmount
   useEffect(() => {
-    setContent(draft);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+    return () => {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Sync draft ONLY when conversationId changes (switching conversations)
+  useEffect(() => {
+    if (prevConvIdRef.current !== conversationId) {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
+      prevConvIdRef.current = conversationId;
+      setContent(draft || '');
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
     }
   }, [conversationId, draft]);
 
-  // Auto-resize textarea
+  // Auto-resize textarea smoothly up to 140px
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -67,7 +88,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
     }
   }, [content]);
 
-  // Auto-dismiss notice banner
+  // Auto-dismiss notice banner after 5 seconds
   useEffect(() => {
     if (!composerNotice) return;
     const timer = setTimeout(() => setComposerNotice(null), 5000);
@@ -75,8 +96,23 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   }, [composerNotice]);
 
   const handleContentChange = (val: string) => {
+    // Suppress mobile virtual keyboard ghost echo after submit
+    if (Date.now() < suppressInputUntilRef.current) {
+      if (textareaRef.current) {
+        textareaRef.current.value = '';
+      }
+      return;
+    }
     setContent(val);
-    onDraftChange?.(val);
+
+    // Debounce draft persistence so parent tree does not re-render on every keystroke
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+    }
+    draftTimerRef.current = setTimeout(() => {
+      onDraftChange?.(val);
+    }, 300);
+
     onTyping();
   };
 
@@ -166,9 +202,8 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
-      // On mobile keyboards, let user create newlines if they tap return, or send
-      // If Shift key is not pressed on desktop, send
-      if (window.innerWidth >= 768) {
+      // Desktop: Enter sends message immediately; mobile: Enter creates a newline
+      if (typeof window !== 'undefined' && window.innerWidth >= 768) {
         e.preventDefault();
         handleSubmit();
       }
@@ -176,6 +211,9 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   };
 
   const handleSubmit = async () => {
+    // Duplicate submission guard: synchronous lock
+    if (isSubmittingRef.current) return;
+
     const trimmed = content.trim();
     const readyAttachments = queuedUploads
       .filter((u) => u.attachment && !u.error)
@@ -189,20 +227,41 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
 
     if (!trimmed && readyAttachments.length === 0) return;
 
+    isSubmittingRef.current = true;
     setIsSubmitting(true);
+    setComposerNotice(null);
+
     try {
       await onSendMessage(trimmed, replyingTo?.id, readyAttachments);
+
+      // Successful send:
+      // 1. Activate temporary input suppression window to ignore mobile virtual keyboard blur/predictive echo
+      suppressInputUntilRef.current = Date.now() + 500;
+      // 2. Clear content and draft
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
       setContent('');
       onDraftChange?.('');
+      // 3. Clear ready attachments
       setQueuedUploads([]);
+      // 4. Reset replying state
       if (replyingTo) onCancelReply();
+
+      // 5. Reset DOM textarea value and height
       if (textareaRef.current) {
+        textareaRef.current.value = '';
         textareaRef.current.style.height = 'auto';
-        if (window.innerWidth >= 768) {
+        if (typeof window !== 'undefined' && window.innerWidth >= 768) {
           textareaRef.current.focus();
         }
       }
+    } catch (err: unknown) {
+      // Failed send: PRESERVE content and draft intact, display error notice
+      const errorMsg = err instanceof Error ? err.message : 'Message could not be sent. Please retry.';
+      setComposerNotice(errorMsg);
     } finally {
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -225,8 +284,13 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
       download_url: gifUrl
     };
 
-    await onSendMessage('', replyingTo?.id, [gifAttachment]);
-    if (replyingTo) onCancelReply();
+    try {
+      await onSendMessage('', replyingTo?.id, [gifAttachment]);
+      if (replyingTo) onCancelReply();
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to send GIF.';
+      setComposerNotice(errorMsg);
+    }
   };
 
   const hasContent = content.trim().length > 0 || queuedUploads.some((u) => u.attachment);
@@ -236,25 +300,30 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="relative p-2.5 sm:p-3 md:p-4 bg-[#FAF8F5] border-t border-[#EAE5E0] safe-area-bottom shrink-0"
+      className={`relative p-2.5 sm:p-3 md:p-4 bg-[#FAF8F5] border-t border-[#EAE5E0] shrink-0 ${
+        isKeyboardOpen ? 'pb-2' : 'safe-area-bottom'
+      }`}
     >
       {/* Drag & Drop Overlay */}
       {isDragging && (
-        <div className="absolute inset-0 z-30 bg-[#F0ECFF]/95 border-2 border-dashed border-[#8B7CF6] rounded-xl flex flex-col items-center justify-center pointer-events-none">
-          <p className="text-sm font-semibold text-[#8B7CF6]">Drop files here to share with friends</p>
+        <div className="absolute inset-0 z-30 bg-[#F0ECFF]/95 border-2 border-dashed border-[#8B7CF6] rounded-2xl flex flex-col items-center justify-center pointer-events-none">
+          <p className="text-sm font-semibold text-[#8B7CF6]">Drop files here to share with circle</p>
           <p className="text-xs text-[#827D8B]">Photos, videos and documents up to 48 MB</p>
         </div>
       )}
 
-      {/* Notice / Alert banner */}
+      {/* Notice / Alert banner (Preserved when sending fails) */}
       {composerNotice && (
-        <div className="mb-2 px-3 py-1.5 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-xs text-rose-700 animate-fadeIn">
-          <span>{composerNotice}</span>
+        <div className="mb-2 px-3 py-1.5 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-xs text-rose-700 animate-in fade-in duration-150">
+          <div className="flex items-center gap-1.5">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-600" />
+            <span className="font-medium">{composerNotice}</span>
+          </div>
           <button
             type="button"
             onClick={() => setComposerNotice(null)}
             aria-label="Dismiss notice"
-            className="p-1 hover:text-rose-900 cursor-pointer"
+            className="p-1 min-w-[28px] min-h-[28px] flex items-center justify-center hover:text-rose-900 cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -263,17 +332,17 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
 
       {/* Replying banner */}
       {replyingTo && (
-        <div className="mb-2 px-3 py-1.5 bg-[#F0ECFF] border-l-2 border-[#8B7CF6] rounded-r-xl flex items-center justify-between text-xs">
+        <div className="mb-2 px-3 py-1.5 bg-[#F0ECFF] border-l-3 border-[#8B7CF6] rounded-r-xl flex items-center justify-between text-xs animate-in fade-in duration-100">
           <div className="flex items-center gap-1.5 truncate">
             <span className="text-[#827D8B]">Replying to</span>
-            <span className="font-semibold text-[#8B7CF6]">{replyingTo.sender_name}:</span>
+            <span className="font-semibold text-[#6D28D9]">{replyingTo.sender_name}:</span>
             <span className="text-[#24212B] truncate">{replyingTo.content}</span>
           </div>
           <button
             type="button"
             onClick={onCancelReply}
             aria-label="Cancel reply"
-            className="p-1 text-[#827D8B] hover:text-[#24212B] cursor-pointer"
+            className="p-1 min-w-[32px] min-h-[32px] flex items-center justify-center text-[#827D8B] hover:text-[#24212B] cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -313,7 +382,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
                 type="button"
                 onClick={() => handleRemoveUpload(item.id)}
                 aria-label={`Remove upload ${item.file.name}`}
-                className="text-[#827D8B] hover:text-[#24212B] cursor-pointer p-0.5"
+                className="text-[#827D8B] hover:text-[#24212B] cursor-pointer p-1 min-w-[28px] min-h-[28px] flex items-center justify-center"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -336,7 +405,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
         />
 
         {/* Toolbar */}
-        <div className="flex items-center justify-between px-2.5 py-1.5 sm:px-3 sm:py-2 border-t border-[#F4F0EA]">
+        <div className="flex items-center justify-between px-2 py-1.5 sm:px-3 sm:py-2 border-t border-[#F4F0EA]">
           <div className="flex items-center gap-1">
             {/* Attachment Button */}
             <input
@@ -356,7 +425,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
               onClick={() => fileInputRef.current?.click()}
               aria-label="Attach file"
               title="Attach photos or files (up to 48 MB)"
-              className="p-2 sm:p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] rounded-xl transition-colors cursor-pointer"
+              className="p-2 sm:p-1.5 min-w-[40px] min-h-[40px] sm:min-w-[36px] sm:min-h-[36px] flex items-center justify-center text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] active:bg-[#EAE4FC] rounded-xl transition-colors cursor-pointer"
             >
               <Paperclip className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
@@ -367,7 +436,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
               onClick={() => setShowPicker(!showPicker)}
               aria-label="Add emoji or GIF"
               title="Emoji & GIF picker"
-              className="p-2 sm:p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] rounded-xl transition-colors cursor-pointer"
+              className="p-2 sm:p-1.5 min-w-[40px] min-h-[40px] sm:min-w-[36px] sm:min-h-[36px] flex items-center justify-center text-[#827D8B] hover:text-[#8B7CF6] hover:bg-[#F0ECFF] active:bg-[#EAE4FC] rounded-xl transition-colors cursor-pointer"
             >
               <Smile className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
@@ -382,7 +451,8 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
               onClick={handleSubmit}
               disabled={!hasContent || isSubmitting}
               aria-label="Send message"
-              className="min-h-[38px] px-3.5 py-1.5 bg-[#8B7CF6] hover:bg-[#7868E8] active:bg-[#6D59D6] text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-30 disabled:cursor-not-allowed"
+              className="min-h-[40px] min-w-[44px] sm:min-h-[36px] px-3.5 py-1.5 bg-[#8B7CF6] hover:bg-[#7868E8] active:bg-[#6D59D6] text-white text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-30 disabled:cursor-not-allowed select-none"
+              style={{ touchAction: 'manipulation' }}
             >
               {isSubmitting ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -406,4 +476,4 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
       />
     </div>
   );
-};
+});

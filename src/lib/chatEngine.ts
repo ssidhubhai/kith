@@ -142,6 +142,8 @@ if (typeof window !== 'undefined') {
 }
 
 export class ChatEngine {
+  private static syncedMemberIds = new Set<string>();
+
   /**
    * Initializes global Realtime subscriptions for Presence and Member directory updates.
    */
@@ -399,6 +401,7 @@ export class ChatEngine {
     });
     listeners.clear();
     onlineMemberSet.clear();
+    this.syncedMemberIds.clear();
 
     if (supabase) {
       try {
@@ -497,17 +500,66 @@ export class ChatEngine {
     const supabase = getSupabase();
     if (supabase) {
       try {
-        await supabase.from('conversation_members').delete().eq('member_id', memberId);
-        await supabase.from('messages').delete().eq('sender_id', memberId);
+        // Delete reactions
         await supabase.from('message_reactions').delete().eq('member_id', memberId);
-        await supabase.from('members').delete().eq('id', memberId);
+
+        // Delete attachments uploaded by member
+        await supabase.from('attachments').delete().eq('uploader_id', memberId);
+
+        // Delete messages sent by member
+        await supabase.from('messages').delete().eq('sender_id', memberId);
+
+        // Find direct conversations involving this member and clean them up
+        const { data: memberships } = await supabase
+          .from('conversation_members')
+          .select('conversation_id')
+          .eq('member_id', memberId);
+
+        if (memberships && memberships.length > 0) {
+          for (const m of memberships) {
+            if (m.conversation_id !== DEFAULT_GROUP_ID) {
+              const { data: conv } = await supabase
+                .from('conversations')
+                .select('id, type')
+                .eq('id', m.conversation_id)
+                .maybeSingle();
+
+              if (conv && conv.type === 'direct') {
+                await supabase.from('messages').delete().eq('conversation_id', conv.id);
+                await supabase.from('conversation_members').delete().eq('conversation_id', conv.id);
+                await supabase.from('conversations').delete().eq('id', conv.id);
+              }
+            }
+          }
+        }
+
+        // Delete remaining conversation memberships
+        await supabase.from('conversation_members').delete().eq('member_id', memberId);
+
+        // Delete member record
+        const { error: delErr } = await supabase.from('members').delete().eq('id', memberId);
+        if (delErr) {
+          console.warn('[Kith] Error deleting member in Supabase:', delErr);
+        }
       } catch (err) {
         console.warn('[Kith] Error deleting member in Supabase:', err);
       }
     }
 
+    // Clean local storage cached member and direct conversations
     const localMembers = this.getLocalMembers().filter(m => m.id !== memberId);
     localStorage.setItem(LOCAL_MEMBERS_KEY, JSON.stringify(localMembers));
+
+    try {
+      const rawConvs = localStorage.getItem(LOCAL_CONVERSATIONS_KEY);
+      if (rawConvs) {
+        const convs: Conversation[] = JSON.parse(rawConvs);
+        const filteredConvs = convs.filter(c => c.type === 'group' || !c.participant_ids?.includes(memberId));
+        localStorage.setItem(LOCAL_CONVERSATIONS_KEY, JSON.stringify(filteredConvs));
+      }
+    } catch {
+      // ignore
+    }
 
     const updated = await this.getMembers();
     memberUpdateListeners.forEach(cb => cb(updated));
@@ -582,6 +634,8 @@ export class ChatEngine {
           conversation_id: DEFAULT_GROUP_ID,
           member_id: member.id
         }, { onConflict: 'conversation_id,member_id' });
+
+        this.syncedMemberIds.add(member.id);
       } catch (err) {
         console.error('[Kith] Supabase member upsert exception:', err);
       }
@@ -998,6 +1052,11 @@ export class ChatEngine {
     return { messages: page, hasMore };
   }
 
+  static getCachedMessages(conversationId: string): Message[] {
+    const all = this.getLocalMessages();
+    return all.filter(m => m.conversation_id === conversationId);
+  }
+
   private static getLocalMessages(): Message[] {
     try {
       const raw = localStorage.getItem(LOCAL_MESSAGES_KEY);
@@ -1063,8 +1122,10 @@ export class ChatEngine {
     const supabase = getSupabase();
     if (supabase) {
       try {
-        // Ensure sender member record exists in Supabase
-        await this.upsertMemberRecord(current);
+        // Ensure sender member record exists in Supabase at least once per session
+        if (!this.syncedMemberIds.has(current.id)) {
+          await this.upsertMemberRecord(current);
+        }
 
         let { error: insertErr } = await supabase.from('messages').insert({
           id: msgId,
@@ -1076,6 +1137,22 @@ export class ChatEngine {
           is_forwarded: metadata?.is_forwarded || false,
           forwarded_from: metadata?.forwarded_from || null
         });
+
+        // If foreign key constraint failed (member record missing in Supabase), sync member and retry insert
+        if (insertErr && (insertErr.code === '23503' || insertErr.message?.includes('foreign key'))) {
+          await this.upsertMemberRecord(current);
+          const retryInsert = await supabase.from('messages').insert({
+            id: msgId,
+            conversation_id: conversationId,
+            sender_id: current.id,
+            content: trimmed,
+            message_type: optimisticMessage.message_type,
+            reply_to_message_id: replyToId || null,
+            is_forwarded: metadata?.is_forwarded || false,
+            forwarded_from: metadata?.forwarded_from || null
+          });
+          insertErr = retryInsert.error;
+        }
 
         if (insertErr && (insertErr.code === 'PGRST204' || insertErr.code === '42703' || insertErr.message?.includes('forwarded') || insertErr.message?.includes('column'))) {
           console.warn('[Kith] messages table lacks forwarded columns. Inserting base columns.');
@@ -1116,11 +1193,12 @@ export class ChatEngine {
           }
         }
 
-        // Update conversation timestamp in Supabase
-        await supabase
+        // Update conversation timestamp non-blocking in background
+        supabase
           .from('conversations')
           .update({ updated_at: now })
-          .eq('id', conversationId);
+          .eq('id', conversationId)
+          .then();
 
         // Confirmed delivered to cloud
         optimisticMessage.status = 'sent';
@@ -1540,39 +1618,49 @@ export class ChatEngine {
             async (payload) => {
               if (payload.eventType === 'INSERT') {
                 const newRow = payload.new as any;
-                let senderData: any = null;
-                const { data: sData, error: sErr } = await activeClient
-                  .from('members')
-                  .select('display_name, avatar_color, avatar_url, nickname, status_text')
-                  .eq('id', newRow.sender_id)
-                  .maybeSingle();
 
-                if (sErr && (sErr.code === '42703' || sErr.message?.includes('column'))) {
-                  const { data: baseSData } = await activeClient
-                    .from('members')
-                    .select('display_name, avatar_color')
-                    .eq('id', newRow.sender_id)
-                    .maybeSingle();
-                  senderData = baseSData;
-                } else {
-                  senderData = sData;
+                // 1. Resolve sender info from local cache first to avoid blocking network roundtrip
+                const cachedMembers = ChatEngine.getLocalMembers();
+                let senderData = cachedMembers.find((m) => m.id === newRow.sender_id);
+
+                if (!senderData) {
+                  // Fallback: fetch sender metadata if not in local cache
+                  try {
+                    const { data: sData, error: sErr } = await activeClient
+                      .from('members')
+                      .select('display_name, avatar_color, avatar_url, nickname, status_text')
+                      .eq('id', newRow.sender_id)
+                      .maybeSingle();
+
+                    if (sErr && (sErr.code === '42703' || sErr.message?.includes('column'))) {
+                      const { data: baseSData } = await activeClient
+                        .from('members')
+                        .select('display_name, avatar_color')
+                        .eq('id', newRow.sender_id)
+                        .maybeSingle();
+                      senderData = baseSData as any;
+                    } else if (sData) {
+                      senderData = sData as any;
+                    }
+                  } catch {}
                 }
 
-                const [{ data: attachments }, { data: reactions }] = await Promise.all([
-                  activeClient
-                    .from('attachments')
-                    .select('*')
-                    .eq('message_id', newRow.id),
-                  activeClient
-                    .from('message_reactions')
-                    .select('*')
-                    .eq('message_id', newRow.id)
-                ]);
-
-                const mappedAttachments = (attachments || []).map((att: any) => ({
-                  ...att,
-                  download_url: resolveAttachmentUrl(att, activeClient)
-                }));
+                // 2. Only fetch attachments if message indicates files attached
+                let mappedAttachments: Attachment[] = [];
+                if (newRow.message_type === 'file') {
+                  try {
+                    const { data: attachments } = await activeClient
+                      .from('attachments')
+                      .select('*')
+                      .eq('message_id', newRow.id);
+                    if (attachments && attachments.length > 0) {
+                      mappedAttachments = attachments.map((att: any) => ({
+                        ...att,
+                        download_url: resolveAttachmentUrl(att, activeClient)
+                      }));
+                    }
+                  } catch {}
+                }
 
                 const msg: Message = {
                   id: newRow.id,
@@ -1590,7 +1678,7 @@ export class ChatEngine {
                   updated_at: newRow.updated_at,
                   deleted_at: newRow.deleted_at,
                   attachments: mappedAttachments,
-                  reactions: reactions || [],
+                  reactions: [],
                   status: 'sent'
                 };
                 callbacks.onMessage(msg, 'insert');

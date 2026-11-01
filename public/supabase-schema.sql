@@ -336,6 +336,11 @@ CREATE POLICY "Users can update their own member profile" ON public.members
     FOR UPDATE TO anon, authenticated
     USING (auth.uid() = id OR auth.uid() IS NULL);
 
+DROP POLICY IF EXISTS "Members can be deleted" ON public.members;
+CREATE POLICY "Members can be deleted" ON public.members
+    FOR DELETE TO anon, authenticated
+    USING (true);
+
 -- Conversations & Membership
 DROP POLICY IF EXISTS "Conversations viewable by participants" ON public.conversations;
 CREATE POLICY "Conversations viewable by participants" ON public.conversations

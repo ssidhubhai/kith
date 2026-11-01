@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ChevronLeft,
   Search,
@@ -83,56 +83,83 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const prevMessagesCountRef = useRef(messages.length);
   const prevConversationIdRef = useRef(conversation.id);
 
-  const { viewportHeight, isKeyboardOpen } = useVisualViewport();
+  const { isKeyboardOpen } = useVisualViewport();
+  const scrollRafRef = useRef<number | null>(null);
+  const isScrolledUpRef = useRef(false);
 
-  const displayedMessages = searchQuery.trim()
-    ? filterMessagesByQuery(messages, searchQuery)
-    : messages;
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+      }
+    };
+  }, []);
 
-  const messageGroups = groupMessages(displayedMessages);
+  const displayedMessages = React.useMemo(() => {
+    return searchQuery.trim()
+      ? filterMessagesByQuery(messages, searchQuery)
+      : messages;
+  }, [messages, searchQuery]);
 
-  // Auto-scroll logic: only scroll if at bottom or when switching conversations
+  const messageGroups = React.useMemo(() => {
+    return groupMessages(displayedMessages);
+  }, [displayedMessages]);
+
+  // Auto-scroll logic: scroll on conversation switch, when at bottom, or when user sends message
   useEffect(() => {
     const isConvChange = prevConversationIdRef.current !== conversation.id;
     prevConversationIdRef.current = conversation.id;
 
     if (isConvChange) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      isScrolledUpRef.current = false;
       setIsScrolledUp(false);
       setHasNewUnseen(false);
       return;
     }
 
     if (messages.length > prevMessagesCountRef.current) {
-      if (!isScrolledUp) {
+      const lastMsg = messages[messages.length - 1];
+      const isSentByMe = lastMsg?.sender_id === currentMember.id;
+      if (!isScrolledUp || isSentByMe) {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        isScrolledUpRef.current = false;
+        setIsScrolledUp(false);
+        setHasNewUnseen(false);
       } else {
         setHasNewUnseen(true);
       }
     }
     prevMessagesCountRef.current = messages.length;
-  }, [messages.length, conversation.id, isScrolledUp]);
+  }, [messages.length, conversation.id, isScrolledUp, currentMember.id, messages]);
 
   // Handle keyboard popup: ensure latest messages remain visible
   useEffect(() => {
     if (isKeyboardOpen && !isScrolledUp) {
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }, 50);
+      }, 60);
     }
   }, [isKeyboardOpen, isScrolledUp]);
 
-  const handleScroll = () => {
-    if (scrollContainerRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
-      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-      const scrolledAway = distanceFromBottom > 120;
-      setIsScrolledUp(scrolledAway);
-      if (!scrolledAway) {
-        setHasNewUnseen(false);
+  const handleScroll = useCallback(() => {
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      if (scrollContainerRef.current) {
+        const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+        const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+        const scrolledAway = distanceFromBottom > 120;
+        if (isScrolledUpRef.current !== scrolledAway) {
+          isScrolledUpRef.current = scrolledAway;
+          setIsScrolledUp(scrolledAway);
+        }
+        if (!scrolledAway) {
+          setHasNewUnseen(false);
+        }
       }
-    }
-  };
+    });
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -339,7 +366,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto py-3 sm:py-4 space-y-3 sm:space-y-4 min-h-0"
+        className="flex-1 overflow-y-auto overscroll-y-contain [webkit-overflow-scrolling:touch] py-3 sm:py-4 space-y-3 sm:space-y-4 min-h-0"
       >
         {/* Load older messages button */}
         {hasMore && (
@@ -479,6 +506,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         onTyping={onTyping}
         draft={draft}
         onDraftChange={onDraftChange}
+        isKeyboardOpen={isKeyboardOpen}
       />
 
       {/* Confirmation Modal for message deletion */}

@@ -39,7 +39,7 @@ interface MessageItemProps {
   onRetry?: (message: Message) => void;
 }
 
-export const MessageItem: React.FC<MessageItemProps> = ({
+export const MessageItem: React.FC<MessageItemProps> = React.memo(({
   message,
   currentMember,
   isFirstInGroup,
@@ -329,7 +329,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                           <div
                             key={att.id}
                             onClick={() => onOpenAttachment(att)}
-                            className="relative inline-block max-w-full sm:max-w-md rounded-xl border border-[#EAE5E0] overflow-hidden cursor-zoom-in bg-[#F4F0EA] shadow-xs hover:border-[#8B7CF6] transition-all"
+                            className="relative inline-block max-w-full sm:max-w-md min-h-[160px] min-w-[200px] rounded-xl border border-[#EAE5E0] overflow-hidden cursor-zoom-in bg-[#F4F0EA] shadow-xs hover:border-[#8B7CF6] transition-all"
                           >
                             <img
                               src={att.download_url}
@@ -490,7 +490,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               type="button"
               onClick={() => setShowMobileActionSheet(true)}
               aria-label="Message options"
-              className="md:hidden min-w-[36px] min-h-[36px] flex items-center justify-center text-[#827D8B] hover:text-[#24212B] active:bg-[#F0ECFF] rounded-xl self-center shrink-0 cursor-pointer"
+              className="md:hidden min-w-[44px] min-h-[44px] flex items-center justify-center text-[#827D8B] hover:text-[#24212B] active:bg-[#F0ECFF] rounded-xl self-center shrink-0 cursor-pointer"
             >
               <MoreHorizontal className="w-4 h-4" />
             </button>
@@ -687,4 +687,4 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       )}
     </>
   );
-};
+});

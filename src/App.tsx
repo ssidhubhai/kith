@@ -16,6 +16,7 @@ import { AccountSettingsModal } from './components/AccountSettingsModal';
 import { FriendProfileCard } from './components/FriendProfileCard';
 import { ForwardModal } from './components/ForwardModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { useVisualViewport } from './hooks/useVisualViewport';
 
 
 export default function App() {
@@ -59,6 +60,8 @@ export default function App() {
     }
     return 'chat';
   });
+
+  const { viewportHeight, isKeyboardOpen } = useVisualViewport();
 
   const unsubscribeConversationRef = useRef<(() => void) | null>(null);
   const typingTimeoutMap = useRef<Map<string, NodeJS.Timeout>>(new Map());
@@ -253,8 +256,19 @@ export default function App() {
             return prev;
           });
 
-          // Refresh conversations to update last message preview and unread counts
-          refreshData();
+          // Optimistically update conversation list preview without heavy network re-fetch
+          setConversations((prev) => {
+            return prev.map((c) => {
+              if (c.id === msg.conversation_id) {
+                return {
+                  ...c,
+                  last_message: msg,
+                  updated_at: msg.created_at
+                };
+              }
+              return c;
+            }).sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime());
+          });
         },
         onAttachmentInsert: (att) => {
           setMessages((prev) =>
@@ -361,23 +375,33 @@ export default function App() {
     refreshData();
   };
 
-  // Send message
-  const handleSendMessage = async (
+  // Send message with failure throwing to preserve composer state
+  const handleSendMessage = useCallback(async (
     content: string,
     replyToId?: string | null,
     attachments?: Attachment[]
   ) => {
     if (!activeConversationId) return;
-    await ChatEngine.sendMessage(activeConversationId, content, replyToId, attachments);
-  };
+    const sent = await ChatEngine.sendMessage(activeConversationId, content, replyToId, attachments);
+    if (sent.status === 'failed') {
+      throw new Error(sent.error || 'Failed to send message. Please retry.');
+    }
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === activeConversationId
+          ? { ...c, last_message: sent, updated_at: sent.created_at }
+          : c
+      )
+    );
+  }, [activeConversationId]);
 
   // Retry failed message
-  const handleRetryMessage = async (msg: Message) => {
+  const handleRetryMessage = useCallback(async (msg: Message) => {
     await ChatEngine.retryFailedMessage(msg);
-  };
+  }, []);
 
   // Forward message
-  const handleForwardMessage = async (targetConvId: string) => {
+  const handleForwardMessage = useCallback(async (targetConvId: string) => {
     if (!forwardingMessage) return;
     await ChatEngine.forwardMessage(forwardingMessage, targetConvId);
     setForwardingMessage(null);
@@ -385,26 +409,26 @@ export default function App() {
     setMobileView('chat');
     window.history.pushState({ view: 'chat', convId: targetConvId }, '');
     refreshData();
-  };
+  }, [forwardingMessage, refreshData]);
 
   // Edit message
-  const handleEditMessage = async (messageId: string, newContent: string) => {
+  const handleEditMessage = useCallback(async (messageId: string, newContent: string) => {
     await ChatEngine.editMessage(messageId, newContent);
-  };
+  }, []);
 
   // Delete message
-  const handleDeleteMessage = async (messageId: string) => {
+  const handleDeleteMessage = useCallback(async (messageId: string) => {
     await ChatEngine.deleteMessage(messageId);
-  };
+  }, []);
 
   // Toggle reaction
-  const handleToggleReaction = async (messageId: string, emoji: string) => {
+  const handleToggleReaction = useCallback(async (messageId: string, emoji: string) => {
     if (!activeConversationId) return;
     await ChatEngine.toggleReaction(activeConversationId, messageId, emoji);
-  };
+  }, [activeConversationId]);
 
   // Start direct chat with friend
-  const handleStartDirectChat = async (targetMember: Member) => {
+  const handleStartDirectChat = useCallback(async (targetMember: Member) => {
     try {
       const directConv = await ChatEngine.getOrCreateDirectConversation(targetMember);
       setConversations((prev) => {
@@ -412,6 +436,8 @@ export default function App() {
         return exists ? prev : [directConv, ...prev];
       });
       setActiveConversationId(directConv.id);
+      const cached = ChatEngine.getCachedMessages(directConv.id);
+      setMessages(cached);
       setMobileView('chat');
       if (window.history.state?.convId !== directConv.id) {
         window.history.pushState({ view: 'chat', convId: directConv.id }, '');
@@ -419,41 +445,55 @@ export default function App() {
     } catch (err) {
       console.error('Failed to open direct conversation:', err);
     }
-  };
+  }, []);
 
   // Delete unwanted/stale friend or account
-  const handleDeleteMember = async (memberId: string) => {
+  const handleDeleteMember = useCallback(async (memberId: string) => {
     try {
       await ChatEngine.deleteMember(memberId);
       refreshData();
     } catch (err) {
       console.error('Failed to delete member:', err);
     }
-  };
+  }, [refreshData]);
 
-  // Select conversation
-  const handleSelectConversation = (convId: string) => {
+  // Select conversation with instantaneous cached message loading to eliminate stale flash
+  const handleSelectConversation = useCallback((convId: string) => {
+    if (convId === activeConversationId) {
+      setMobileView('chat');
+      return;
+    }
     setActiveConversationId(convId);
+    const cached = ChatEngine.getCachedMessages(convId);
+    setMessages(cached);
     setMobileView('chat');
     if (window.history.state?.view !== 'chat' || window.history.state?.convId !== convId) {
       window.history.pushState({ view: 'chat', convId }, '');
     }
-  };
+  }, [activeConversationId]);
 
   // Back to conversation list on mobile
-  const handleBackToSidebar = () => {
+  const handleBackToSidebar = useCallback(() => {
     setMobileView('sidebar');
     if (window.history.state?.view === 'chat') {
       window.history.back();
     }
-  };
+  }, []);
 
   // Broadcast typing
-  const handleTyping = () => {
+  const handleTyping = useCallback(() => {
     if (activeConversationId) {
       ChatEngine.sendTyping(activeConversationId);
     }
-  };
+  }, [activeConversationId]);
+
+  // Draft change handler
+  const handleDraftChange = useCallback((newDraft: string) => {
+    setDrafts((prev) => {
+      if (prev[activeConversationId] === newDraft) return prev;
+      return { ...prev, [activeConversationId]: newDraft };
+    });
+  }, [activeConversationId]);
 
   // Active conversation object
   const activeConversation = conversations.find((c) => c.id === activeConversationId) || {
@@ -492,7 +532,10 @@ export default function App() {
   }
 
   return (
-    <div className="fixed inset-0 flex h-[100dvh] w-full overflow-hidden bg-[#FAF8F5] text-[#24212B] font-sans antialiased">
+    <div
+      style={isKeyboardOpen && viewportHeight ? { height: `${viewportHeight}px`, maxHeight: `${viewportHeight}px` } : undefined}
+      className="fixed inset-0 flex h-[100dvh] w-full overflow-hidden bg-[#FAF8F5] text-[#24212B] font-sans antialiased"
+    >
       {/* Sidebar (Desktop always visible, Mobile conditionally visible) */}
       <div
         className={`${
@@ -537,9 +580,7 @@ export default function App() {
           onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
           onTyping={handleTyping}
           draft={drafts[activeConversationId] || ''}
-          onDraftChange={(newDraft) =>
-            setDrafts((prev) => ({ ...prev, [activeConversationId]: newDraft }))
-          }
+          onDraftChange={handleDraftChange}
           connectionState={connectionState}
           lastReadTime={ChatEngine.getLastReadTime(activeConversationId)}
           onForwardMessage={(msg) => setForwardingMessage(msg)}
@@ -578,6 +619,7 @@ export default function App() {
         onStartDirectChat={handleStartDirectChat}
         isCurrentUser={inspectingMember?.id === currentMember.id}
         onEditProfile={() => setIsProfileModalOpen(true)}
+        onDeleteMember={handleDeleteMember}
       />
 
       {/* Message Forward Modal */}

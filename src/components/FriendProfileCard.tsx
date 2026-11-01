@@ -11,7 +11,8 @@ import {
   Mail,
   Maximize2,
   ShieldCheck,
-  Share2
+  Share2,
+  Trash2
 } from 'lucide-react';
 import { Member } from '../types';
 import { getMemberAvatarPalette } from '../utils/avatarUtils';
@@ -22,6 +23,7 @@ interface FriendProfileCardProps {
   onStartDirectChat?: (member: Member) => void;
   isCurrentUser?: boolean;
   onEditProfile?: () => void;
+  onDeleteMember?: (memberId: string) => void;
 }
 
 export const FriendProfileCard: React.FC<FriendProfileCardProps> = ({
@@ -29,10 +31,12 @@ export const FriendProfileCard: React.FC<FriendProfileCardProps> = ({
   onClose,
   onStartDirectChat,
   isCurrentUser,
-  onEditProfile
+  onEditProfile,
+  onDeleteMember
 }) => {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [isPhotoExpanded, setIsPhotoExpanded] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   if (!member) return null;
 
@@ -303,6 +307,45 @@ export const FriendProfileCard: React.FC<FriendProfileCardProps> = ({
                       <Share2 className="w-3.5 h-3.5 text-[#827D8B]" />
                       <span>{copiedField === 'share' ? 'Profile Link Copied!' : 'Share Profile Link'}</span>
                     </button>
+                  )}
+
+                  {onDeleteMember && !confirmingDelete && (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingDelete(true)}
+                      className="w-full py-2 px-4 bg-rose-50/80 hover:bg-rose-100 text-rose-600 border border-rose-200/70 text-xs font-medium rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer mt-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Remove User from Circle</span>
+                    </button>
+                  )}
+
+                  {onDeleteMember && confirmingDelete && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-2 mt-1 animate-in fade-in duration-150">
+                      <p className="text-[11px] text-rose-800 font-medium text-center">
+                        Remove {member.display_name}? This will remove this user and their messages from your circle.
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingDelete(false)}
+                          className="flex-1 py-1.5 text-xs text-[#827D8B] bg-white border border-[#EAE5E0] hover:bg-[#FAF8F5] rounded-lg transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onDeleteMember(member.id);
+                            onClose();
+                          }}
+                          className="flex-1 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Confirm Remove</span>
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </>
               )}

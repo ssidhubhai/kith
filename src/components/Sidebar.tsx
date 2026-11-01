@@ -42,6 +42,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenFriendProfile
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [memberToDelete, setMemberToDelete] = useState<Member | null>(null);
 
   const groupConversations = conversations.filter(c =>
     c.type === 'group' &&
@@ -57,94 +58,95 @@ export const Sidebar: React.FC<SidebarProps> = ({
     c.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Filter out current user (matching ID, display_name, or username) so self never duplicates in directory
-  const currentTrimmedName = currentMember.display_name?.trim().toLowerCase() || '';
-  const currentUsername = currentMember.username?.trim().toLowerCase() || '';
+  // Filter out current user and deduplicate members
+  const otherMembers = React.useMemo(() => {
+    const currentTrimmedName = currentMember.display_name?.trim().toLowerCase() || '';
+    const currentUsername = currentMember.username?.trim().toLowerCase() || '';
 
-  const rawOtherMembers = members.filter(m => {
-    if (m.id === currentMember.id) return false;
-    const mName = m.display_name?.trim().toLowerCase() || '';
-    if (currentTrimmedName && mName === currentTrimmedName) return false;
-    const mUser = m.username?.trim().toLowerCase() || '';
-    if (currentUsername && mUser && mUser === currentUsername) return false;
-    return true;
-  });
+    const rawOtherMembers = members.filter(m => {
+      if (m.id === currentMember.id) return false;
+      const mName = m.display_name?.trim().toLowerCase() || '';
+      if (currentTrimmedName && mName === currentTrimmedName) return false;
+      const mUser = m.username?.trim().toLowerCase() || '';
+      if (currentUsername && mUser && mUser === currentUsername) return false;
+      return true;
+    });
 
-  // Deduplicate by ID and unique identity key
-  const dedupeMap = new Map<string, Member>();
-  for (const m of rawOtherMembers) {
-    const key = m.username ? `@${m.username.toLowerCase()}` : m.display_name.trim().toLowerCase();
-    if (!dedupeMap.has(key) && !dedupeMap.has(m.id)) {
-      dedupeMap.set(key, m);
-      dedupeMap.set(m.id, m);
+    const dedupeMap = new Map<string, Member>();
+    for (const m of rawOtherMembers) {
+      const key = m.username ? `@${m.username.toLowerCase()}` : m.display_name.trim().toLowerCase();
+      if (!dedupeMap.has(key) && !dedupeMap.has(m.id)) {
+        dedupeMap.set(key, m);
+        dedupeMap.set(m.id, m);
+      }
     }
-  }
-  const otherMembers = Array.from(new Set(dedupeMap.values()));
+    return Array.from(new Set(dedupeMap.values()));
+  }, [members, currentMember]);
 
-  // Construct unified contacts list merging direct conversations & friends without duplication
-  const unifiedContactsRaw = otherMembers.map((member) => {
-    const matchConv = directConversations.find(c =>
-      c.participant_ids?.includes(member.id) ||
-      c.title.toLowerCase() === member.display_name.toLowerCase() ||
-      (member.username && c.title.toLowerCase().includes(member.username.toLowerCase()))
-    );
+  // Memoized contacts calculation
+  const unifiedContacts = React.useMemo(() => {
+    const unified = otherMembers.map((member) => {
+      const matchConv = directConversations.find(c =>
+        c.participant_ids?.includes(member.id) ||
+        c.title.toLowerCase() === member.display_name.toLowerCase() ||
+        (member.username && c.title.toLowerCase().includes(member.username.toLowerCase()))
+      );
 
-    const lastMsg = matchConv?.last_message;
-    const sortTime = lastMsg ? new Date(lastMsg.created_at).getTime() : 0;
+      const lastMsg = matchConv?.last_message;
+      const sortTime = lastMsg ? new Date(lastMsg.created_at).getTime() : 0;
 
-    return {
-      id: member.id,
-      member,
-      conversation: matchConv,
-      lastMessage: lastMsg,
-      unreadCount: matchConv?.unread_count || 0,
-      sortTime
-    };
-  });
-
-  // Include any direct conversations whose member might not be in the directory list
-  for (const conv of directConversations) {
-    const matchedMemberId = conv.participant_ids?.find(id => id !== currentMember.id);
-    const existing = unifiedContactsRaw.some(u => u.conversation?.id === conv.id || (matchedMemberId && u.member.id === matchedMemberId));
-    if (!existing) {
-      const synthMember: Member = {
-        id: matchedMemberId || conv.id,
-        display_name: conv.title,
-        avatar_color: '#0284C7',
-        last_seen_at: conv.updated_at || new Date().toISOString(),
-        created_at: conv.created_at || new Date().toISOString(),
-        is_online: false
+      return {
+        id: member.id,
+        member,
+        conversation: matchConv,
+        lastMessage: lastMsg,
+        unreadCount: matchConv?.unread_count || 0,
+        sortTime
       };
-      unifiedContactsRaw.push({
-        id: synthMember.id,
-        member: synthMember,
-        conversation: conv,
-        lastMessage: conv.last_message,
-        unreadCount: conv.unread_count || 0,
-        sortTime: conv.last_message ? new Date(conv.last_message.created_at).getTime() : 0
-      });
+    });
+
+    for (const conv of directConversations) {
+      const matchedMemberId = conv.participant_ids?.find(id => id !== currentMember.id);
+      const existing = unified.some(u => u.conversation?.id === conv.id || (matchedMemberId && u.member.id === matchedMemberId));
+      if (!existing) {
+        const synthMember: Member = {
+          id: matchedMemberId || conv.id,
+          display_name: conv.title,
+          avatar_color: '#0284C7',
+          last_seen_at: conv.updated_at || new Date().toISOString(),
+          created_at: conv.created_at || new Date().toISOString(),
+          is_online: false
+        };
+        unified.push({
+          id: synthMember.id,
+          member: synthMember,
+          conversation: conv,
+          lastMessage: conv.last_message,
+          unreadCount: conv.unread_count || 0,
+          sortTime: conv.last_message ? new Date(conv.last_message.created_at).getTime() : 0
+        });
+      }
     }
-  }
 
-  // Sort: Recent messages first, then online status, then alphabetical
-  unifiedContactsRaw.sort((a, b) => {
-    if (a.sortTime !== b.sortTime) return b.sortTime - a.sortTime;
-    if (a.member.is_online !== b.member.is_online) return a.member.is_online ? -1 : 1;
-    return a.member.display_name.localeCompare(b.member.display_name);
-  });
+    unified.sort((a, b) => {
+      if (a.sortTime !== b.sortTime) return b.sortTime - a.sortTime;
+      if (a.member.is_online !== b.member.is_online) return a.member.is_online ? -1 : 1;
+      return a.member.display_name.localeCompare(b.member.display_name);
+    });
 
-  // Filter unified contacts by search query
-  const query = searchQuery.trim().toLowerCase();
-  const unifiedContacts = unifiedContactsRaw.filter(item => {
-    if (!query) return true;
-    const m = item.member;
-    return (
-      m.display_name.toLowerCase().includes(query) ||
-      (m.username && m.username.toLowerCase().includes(query)) ||
-      (m.nickname && m.nickname.toLowerCase().includes(query)) ||
-      (item.lastMessage?.content && item.lastMessage.content.toLowerCase().includes(query))
-    );
-  });
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return unified;
+
+    return unified.filter(item => {
+      const m = item.member;
+      return (
+        m.display_name.toLowerCase().includes(q) ||
+        (m.username && m.username.toLowerCase().includes(q)) ||
+        (m.nickname && m.nickname.toLowerCase().includes(q)) ||
+        (item.lastMessage?.content && item.lastMessage.content.toLowerCase().includes(q))
+      );
+    });
+  }, [otherMembers, directConversations, currentMember.id, searchQuery]);
 
   const [backendInfo, setBackendInfo] = useState<BackendInfo>(getCurrentBackendInfo());
 
@@ -159,7 +161,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <aside
       aria-label="Sidebar navigation"
-      className="w-full md:w-72 lg:w-80 h-full bg-[#F4F0EA] border-r border-[#EAE5E0] flex flex-col shrink-0 select-none text-[#24212B] min-h-0"
+      className="w-full h-full bg-[#F4F0EA] flex flex-col shrink-0 select-none text-[#24212B] min-h-0"
     >
       {/* Top Header Bar */}
       <div className="p-3.5 sm:p-4 border-b border-[#EAE5E0] bg-[#FAF8F5] flex items-center justify-between safe-area-top">
@@ -508,10 +510,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            onDeleteMember(member.id);
+                            setMemberToDelete(member);
                           }}
                           title={`Remove ${member.display_name}`}
-                          className="min-w-[32px] min-h-[32px] flex items-center justify-center text-[#827D8B] hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer opacity-0 group-hover:opacity-100"
+                          aria-label={`Remove ${member.display_name}`}
+                          className="min-w-[32px] min-h-[32px] flex items-center justify-center text-[#827D8B] hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer opacity-70 sm:opacity-0 sm:group-hover:opacity-100"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -528,6 +531,53 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
       </div>
+
+      {/* Confirmation Modal for Contact Deletion */}
+      {memberToDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setMemberToDelete(null)}
+        >
+          <div
+            className="w-full max-w-xs bg-[#FAF8F5] rounded-3xl border border-[#EAE5E0] shadow-2xl p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-10 h-10 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-500 mb-3">
+              <Trash2 className="w-5 h-5" />
+            </div>
+            <h3 className="text-sm font-bold text-[#24212B]">
+              Remove {memberToDelete.display_name}?
+            </h3>
+            <p className="text-xs text-[#827D8B] mt-1 leading-relaxed">
+              This will remove this user and their messages from your circle.
+            </p>
+            <div className="mt-4 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setMemberToDelete(null)}
+                className="flex-1 py-2 px-3 text-xs font-medium text-[#827D8B] bg-white border border-[#EAE5E0] hover:bg-[#FAF8F5] rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeleteMember) {
+                    onDeleteMember(memberToDelete.id);
+                  }
+                  setMemberToDelete(null);
+                }}
+                className="flex-1 py-2 px-3 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-colors shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Remove</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 };
